@@ -1,0 +1,8 @@
+services:
+  mdsite:
+    build: .
+    container_name: minio-mdsite
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "7861:7861"

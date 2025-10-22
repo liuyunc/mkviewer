@@ -1,0 +1,4 @@
+gradio>=4.38.1
+minio>=7.2.7
+Markdown>=3.6
+Pygments>=2.18
