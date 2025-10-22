@@ -43,6 +43,27 @@ ES_TIMEOUT = int(os.getenv("ES_TIMEOUT", "10"))
 
 ES_ENABLED = bool(ES_HOSTS)
 
+MATHJAX_SNIPPET = """
+<script>
+window.MathJax = window.MathJax || {
+    tex: {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]},
+    svg: {fontCache: 'global'}
+};
+if (!window.__MKV_MATHJAX_LOADING__) {
+    window.__MKV_MATHJAX_LOADING__ = true;
+    var script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js';
+    script.async = true;
+    script.onload = function() {
+        window.MathJax && window.MathJax.typesetPromise && window.MathJax.typesetPromise();
+    };
+    document.head.appendChild(script);
+} else if (window.MathJax && window.MathJax.typesetPromise) {
+    window.MathJax.typesetPromise();
+}
+</script>
+"""
+
 # ==================== MinIO 连接 ====================
 _client = None
 _active_ep = None
@@ -211,7 +232,8 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     if doc_type == "markdown":
         text = data.decode("utf-8", errors="ignore")
         text2 = rewrite_image_links(text)
-        html = markdown(text2, extensions=["fenced_code", "tables", "codehilite"])
+        rendered = markdown(text2, extensions=["fenced_code", "tables", "codehilite"])
+        html = "<div class='markdown-body'>" + rendered + "</div>" + MATHJAX_SNIPPET
     elif doc_type == "docx":
         if mammoth is None:
             raise RuntimeError("未安装 mammoth，无法预览 DOCX 文档。")
