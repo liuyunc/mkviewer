@@ -2,3 +2,6 @@ gradio>=4.38.1
 minio>=7.2.7
 Markdown>=3.6
 Pygments>=2.18
+elasticsearch>=8.13
+mammoth>=1.6
+textract>=1.6.5

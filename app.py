@@ -1,13 +1,27 @@
+import io
 import os
 import re
+import tempfile
 from collections import OrderedDict
 from datetime import timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 
 import gradio as gr
 from markdown import markdown
 from minio import Minio
+from elasticsearch import Elasticsearch
+from elasticsearch.exceptions import NotFoundError
+
+try:
+    import mammoth
+except Exception:  # pragma: no cover - optional dependency guard
+    mammoth = None
+
+try:
+    import textract
+except Exception:  # pragma: no cover - optional dependency guard
+    textract = None
 
 # ==================== 环境变量 ====================
 MINIO_ENDPOINTS = os.getenv("MINIO_ENDPOINTS", "10.20.41.24:9005,10.20.40.101:9005").split(",")
@@ -20,6 +34,14 @@ IMAGE_PUBLIC_BASE = os.getenv("IMAGE_PUBLIC_BASE", "http://10.20.41.24:9005")
 SITE_TITLE = os.getenv("SITE_TITLE", "通号院文档知识库")
 BIND_HOST = os.getenv("BIND_HOST", "0.0.0.0")
 BIND_PORT = int(os.getenv("BIND_PORT", "7861"))
+ES_HOSTS = [h.strip() for h in os.getenv("ES_HOSTS", "http://localhost:9200").split(",") if h.strip()]
+ES_INDEX = os.getenv("ES_INDEX", "mkviewer-docs")
+ES_USERNAME = os.getenv("ES_USERNAME", "")
+ES_PASSWORD = os.getenv("ES_PASSWORD", "")
+ES_VERIFY_CERTS = os.getenv("ES_VERIFY_CERTS", "true").strip().lower() == "true"
+ES_TIMEOUT = int(os.getenv("ES_TIMEOUT", "10"))
+
+ES_ENABLED = bool(ES_HOSTS)
 
 # ==================== MinIO 连接 ====================
 _client = None
@@ -40,8 +62,54 @@ def connect() -> Tuple[Minio, str]:
             last = e
     raise RuntimeError(f"无法连接 MinIO：{MINIO_ENDPOINTS} 最后错误：{last}")
 
+# ==================== Elasticsearch 连接 ====================
+_es_client: Optional[Elasticsearch] = None
+
+
+def es_connect() -> Elasticsearch:
+    if not ES_ENABLED:
+        raise RuntimeError("未配置 Elasticsearch 主机")
+    global _es_client
+    if _es_client is not None:
+        return _es_client
+    kwargs = {
+        "hosts": ES_HOSTS,
+        "verify_certs": ES_VERIFY_CERTS,
+        "request_timeout": ES_TIMEOUT,
+    }
+    if ES_USERNAME or ES_PASSWORD:
+        kwargs["basic_auth"] = (ES_USERNAME, ES_PASSWORD)
+    _es_client = Elasticsearch(**kwargs)
+    ensure_es_index(_es_client)
+    return _es_client
+
+
+def ensure_es_index(es: Elasticsearch) -> None:
+    if es.indices.exists(index=ES_INDEX):
+        return
+    es.indices.create(
+        index=ES_INDEX,
+        mappings={
+            "properties": {
+                "path": {"type": "keyword"},
+                "title": {"type": "keyword"},
+                "content": {"type": "text"},
+                "etag": {"type": "keyword"},
+                "ext": {"type": "keyword"},
+            }
+        },
+    )
+
 # ==================== 图片链接重写 ====================
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
+# 支持的文档类型
+SUPPORTED_EXTS = {
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".docx": "docx",
+    ".doc": "doc",
+}
+MARKDOWN_EXTS = (".md", ".markdown")
 #IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
 def _to_public_image_url(path: str) -> str:
     p = path.strip().lstrip("./").lstrip("/")
@@ -92,36 +160,90 @@ class LRU:
     def clear(self):
         self.od.clear()
 
-MD_CACHE = LRU(512)  # key -> (etag, text, html)
+DOC_CACHE = LRU(512)  # key -> (etag, doc_type, text, html)
+
+TREE_DOCS: List[Dict[str, str]] = []
 
 # ==================== 列表/读取 ====================
 
-def list_md_files() -> List[str]:
+def list_documents() -> List[Dict[str, str]]:
     c, _ = connect()
     objs = c.list_objects(DOC_BUCKET, prefix=DOC_PREFIX or None, recursive=True)
-    out: List[str] = []
+    docs: List[Dict[str, str]] = []
     for o in objs:
         name = o.object_name
-        if name.lower().endswith((".md", ".markdown")):
-            out.append(name)
-    return sorted(out, key=str.lower)
+        ext = os.path.splitext(name)[1].lower()
+        doc_type = SUPPORTED_EXTS.get(ext)
+        if not doc_type:
+            continue
+        etag = getattr(o, "etag", None) or getattr(o, "_etag", None) or ""
+        docs.append({"key": name, "etag": etag, "ext": ext, "doc_type": doc_type})
+    docs.sort(key=lambda x: x["key"].lower())
+    return docs
 
 
-def get_md(key: str) -> Tuple[str, str, str]:
-    """返回 (etag, text, html)；缓存命中则不再下载。"""
+def _plain_text_html(text: str) -> str:
+    if not text.strip():
+        return "<div class='doc-preview'><em>文档为空</em></div>"
+    esc = _esc(text)
+    return "<div class='doc-preview'>" + esc.replace("\n", "<br>") + "</div>"
+
+
+def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, str, str]:
+    """返回 (etag, doc_type, text, html)。"""
     c, _ = connect()
-    stat = c.stat_object(DOC_BUCKET, key)
-    etag = getattr(stat, "etag", None) or getattr(stat, "_etag", None) or ""
-    cached = MD_CACHE.get(key)
+    ext = os.path.splitext(key)[1].lower()
+    doc_type = SUPPORTED_EXTS.get(ext)
+    if not doc_type:
+        raise RuntimeError(f"不支持的文件类型：{ext}")
+    if known_etag is None:
+        stat = c.stat_object(DOC_BUCKET, key)
+        etag = getattr(stat, "etag", None) or getattr(stat, "_etag", None) or ""
+    else:
+        etag = known_etag
+    cached = DOC_CACHE.get(key)
     if cached and cached[0] == etag:
         return cached
     resp = c.get_object(DOC_BUCKET, key)
-    data = resp.read(); resp.close(); resp.release_conn()
-    text = data.decode("utf-8", errors="ignore")
-    text2 = rewrite_image_links(text)
-    html = markdown(text2, extensions=["fenced_code", "tables", "codehilite"])
-    MD_CACHE.set(key, (etag, text, html))
-    return etag, text, html
+    data = resp.read()
+    resp.close(); resp.release_conn()
+
+    if doc_type == "markdown":
+        text = data.decode("utf-8", errors="ignore")
+        text2 = rewrite_image_links(text)
+        html = markdown(text2, extensions=["fenced_code", "tables", "codehilite"])
+    elif doc_type == "docx":
+        if mammoth is None:
+            raise RuntimeError("未安装 mammoth，无法预览 DOCX 文档。")
+        try:
+            html_result = mammoth.convert_to_html(io.BytesIO(data))
+            text_result = mammoth.extract_raw_text(io.BytesIO(data))
+        except Exception as exc:  # pragma: no cover - 转换错误主要依赖外部库
+            raise RuntimeError(f"DOCX 解析失败：{exc}") from exc
+        text = text_result.value
+        html = "<div class='docx-preview'>" + html_result.value + "</div>"
+    elif doc_type == "doc":
+        if textract is None:
+            raise RuntimeError("未安装 textract 或其依赖，无法预览 DOC 文档。")
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
+                tmp.write(data)
+                tmp.flush()
+                tmp_name = tmp.name
+            try:
+                text_bytes = textract.process(tmp_name)
+            finally:
+                if os.path.exists(tmp_name):
+                    os.unlink(tmp_name)
+        except Exception as exc:  # pragma: no cover - 转换错误主要依赖外部库
+            raise RuntimeError(f"DOC 解析失败：{exc}") from exc
+        text = text_bytes.decode("utf-8", errors="ignore")
+        html = _plain_text_html(text)
+    else:  # pragma: no cover - 理论上不会走到
+        raise RuntimeError(f"未知文档类型：{doc_type}")
+
+    DOC_CACHE.set(key, (etag, doc_type, text, html))
+    return etag, doc_type, text, html
 
 # ==================== 目录树 ====================
 
@@ -143,6 +265,13 @@ def _esc(t: str) -> str:
     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _file_icon(name: str) -> str:
+    ext = os.path.splitext(name)[1].lower()
+    if ext in (".doc", ".docx"):
+        return "📄"
+    return "📝"
+
+
 def render_tree_html(tree: Dict, expand_all: bool = True) -> str:
     html: List[str] = []
     open_attr = " open" if expand_all else ""
@@ -155,9 +284,75 @@ def render_tree_html(tree: Dict, expand_all: bool = True) -> str:
         for key in sorted(node.get("__files__", []), key=str.lower):
             name = key.split("/")[-1]
             link = "?" + urlencode({"key": key})
-            html.append(f"<div class='file'>📝 <a href='{link}'>{_esc(name)}</a></div>")
+            html.append(f"<div class='file'>{_file_icon(name)} <a href='{link}'>{_esc(name)}</a></div>")
     rec(tree)
-    return "".join(html) if html else "<em>没有找到 Markdown 文件</em>"
+    return "".join(html) if html else "<em>没有找到可预览的文档</em>"
+
+
+def sync_elasticsearch(docs: List[Dict[str, str]], force: bool = False) -> str:
+    if not ES_ENABLED:
+        return "<em>未启用 Elasticsearch，跳过索引同步</em>"
+    if not docs:
+        return "<em>索引同步完成：无可用文档</em>"
+    try:
+        es = es_connect()
+    except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
+        return f"<em>索引同步失败：{_esc(str(exc))}</em>"
+
+    try:
+        existing_resp = es.search(index=ES_INDEX, query={"match_all": {}}, size=10000, _source=["etag"])
+        existing_map = {hit["_id"]: hit["_source"].get("etag", "") for hit in existing_resp.get("hits", {}).get("hits", [])}
+    except NotFoundError:
+        existing_map = {}
+    except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
+        return f"<em>读取索引失败：{_esc(str(exc))}</em>"
+
+    doc_keys = {d["key"] for d in docs}
+    removed = 0
+    for stale_id in [k for k in existing_map.keys() if k not in doc_keys]:
+        try:
+            es.options(ignore_status=[404]).delete(index=ES_INDEX, id=stale_id)
+            removed += 1
+        except Exception:
+            pass
+
+    updated = 0
+    errors: List[str] = []
+    for doc in docs:
+        key = doc["key"]
+        etag_hint = doc.get("etag")
+        if not force and existing_map.get(key) == etag_hint:
+            continue
+        try:
+            etag, doc_type, text, _ = get_document(key, known_etag=etag_hint)
+        except Exception as exc:
+            errors.append(f"{key}: {exc}")
+            continue
+        if not text.strip():
+            continue
+        body = {
+            "path": key,
+            "title": key.split("/")[-1],
+            "content": text,
+            "etag": etag,
+            "ext": doc_type,
+        }
+        try:
+            es.index(index=ES_INDEX, id=key, document=body)
+            updated += 1
+        except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
+            errors.append(f"{key}: {exc}")
+    if updated or removed:
+        try:
+            es.indices.refresh(index=ES_INDEX)
+        except Exception:
+            pass
+    msg = f"索引同步完成：更新 {updated} 项，移除 {removed} 项"
+    if errors:
+        escaped = ", ".join(_esc(e) for e in errors[:5])
+        more = "" if len(errors) <= 5 else f" 等 {len(errors)} 项"
+        msg += f"<br><small>部分文档未入索引：{escaped}{more}</small>"
+    return msg
 
 GLOBAL_CSS = """
 <style>
@@ -230,6 +425,14 @@ body { background:var(--brand-bg); }
 .controls .gr-button {
     min-width:96px;
 }
+.status-bar {
+    margin:8px 0 6px;
+    color:var(--brand-muted);
+    font-size:.92rem;
+}
+.status-bar em {
+    color:var(--brand-muted);
+}
 .sidebar {
     position:sticky;
     top:8px;
@@ -292,11 +495,46 @@ body { background:var(--brand-bg); }
     border-radius:4px;
     padding:0 2px;
 }
+.search-snippet {
+    margin-left:1.2rem;
+    color:#374151;
+    font-size:.92rem;
+}
+.search-snippet mark {
+    background:rgba(31,111,235,0.2);
+    color:var(--brand-text);
+    border-radius:4px;
+    padding:0 2px;
+}
 .gradio-container .tab-nav button {
     font-weight:600;
 }
 .gradio-container .tab-nav button[aria-selected="true"] {
     color:var(--brand-primary);
+}
+.doc-preview,
+.docx-preview {
+    margin-top:.6rem;
+    padding:14px 18px;
+    background:var(--brand-card);
+    border-radius:18px;
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+    line-height:1.62;
+}
+.doc-preview {
+    white-space:pre-wrap;
+}
+.docx-preview p {
+    margin:0 0 .8em 0;
+}
+.doc-error {
+    margin-top:.6rem;
+    padding:12px 16px;
+    border-radius:12px;
+    background:rgba(239,68,68,0.12);
+    color:#b91c1c;
+    border:1px solid rgba(239,68,68,0.35);
 }
 </style>
 """
@@ -344,18 +582,47 @@ def fulltext_search(query: str) -> str:
     query = (query or "").strip()
     if not query:
         return "<em>请输入关键字</em>"
-    files = list_md_files()
-    results: List[Tuple[str,int,str]] = []  # (key, score, snippet)
-    ql = query.lower()
-    for k in files:
-        _, text, _ = get_md(k)
-        cnt = text.lower().count(ql)
-        if cnt > 0:
-            results.append((k, cnt, make_snippet(text, query)))
-    if not results:
+    if not ES_ENABLED:
+        return "<em>未配置 Elasticsearch，无法执行全文检索</em>"
+    try:
+        es = es_connect()
+    except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
+        return f"<em>搜索服务不可用：{_esc(str(exc))}</em>"
+    try:
+        resp = es.search(
+            index=ES_INDEX,
+            query={"multi_match": {"query": query, "fields": ["content"]}},
+            size=200,
+            highlight={
+                "pre_tags": ["<mark>"],
+                "post_tags": ["</mark>"],
+                "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
+            },
+        )
+    except NotFoundError:
+        return "<em>索引尚未建立，请先同步文档</em>"
+    except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
+        return f"<em>检索失败：{_esc(str(exc))}</em>"
+    hits = resp.get("hits", {}).get("hits", [])
+    if not hits:
         return "<em>未找到匹配内容</em>"
-    results.sort(key=lambda x: (-x[1], x[0].lower()))
-    rows = [f"<div>🔎 <a href='?{urlencode({'key':k})}'>{_esc(k.split('/')[-1])}</a> <span class='badge'>(匹配 {score} 次)</span><br><div style='margin-left:1.2rem;color:#374151;font-size:.9rem'>{snip}</div></div>" for k,score,snip in results[:200]]
+    rows: List[str] = []
+    for hit in hits:
+        key = hit.get("_id") or ""
+        title = key.split("/")[-1] if key else "未知文件"
+        highlights = hit.get("highlight", {}).get("content", [])
+        if highlights:
+            snippet = "<br>".join(highlights)
+        else:
+            src = hit.get("_source", {})
+            snippet = make_snippet(src.get("content", ""), query)
+        score = hit.get("_score", 0.0)
+        icon = _file_icon(key or title)
+        rows.append(
+            f"<div>{icon} <a href='?{urlencode({'key': key})}'>{_esc(title)}</a> "
+            f"<span class='badge'>(相关度 {score:.2f})</span><br>"
+            f"<div class='search-snippet'>{snippet}</div></div>"
+        )
     return "".join(rows)
 
 # ==================== 预签名下载链接 ====================
@@ -383,6 +650,8 @@ def ui_app():
                     btn_expand = gr.Button("展开全部")
                     btn_collapse = gr.Button("折叠全部")
                     btn_clear = gr.Button("清空缓存")
+                    btn_reindex = gr.Button("重建索引", variant="secondary")
+                status_bar = gr.HTML("", elem_classes=["status-bar"])
                 q = gr.Textbox(label="全文搜索", placeholder="输入关键字… 然后回车或点搜索")
                 btn_search = gr.Button("搜索")
                 tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar"])
@@ -391,42 +660,65 @@ def ui_app():
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("")
                         html_view = gr.HTML("<em>请选择左侧文件…</em>")
-                    with gr.TabItem("源文件", id="source"):
-                        md_view = gr.Textbox(lines=26, interactive=False)
+                    with gr.TabItem("文本内容", id="source"):
+                        md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本")
                     with gr.TabItem("全文搜索", id="search"):
-                        search_out = gr.HTML("<em>在左侧输入关键词后点击“搜索”</em>", elem_classes=["search-panel"])
+                        search_out = gr.HTML("<em>在左侧输入关键词后点击“搜索”（由 Elasticsearch 提供支持）</em>", elem_classes=["search-panel"])
 
         # 内部状态：是否展开全部
         expand_state = gr.State(True)
 
-        def _load_tree(expand_all: bool):
-            files = list_md_files()
+        def _refresh_tree(expand_all: bool):
+            global TREE_DOCS
+            docs = list_documents()
+            TREE_DOCS = docs
             base = DOC_PREFIX.rstrip("/") + "/" if DOC_PREFIX else ""
-            t = build_tree(files, base_prefix=base)
-            return render_tree_html(t, expand_all)
+            tree = build_tree([d["key"] for d in docs], base_prefix=base)
+            status = sync_elasticsearch(docs)
+            return render_tree_html(tree, expand_all), status
+
+        def _render_cached_tree(expand_all: bool):
+            global TREE_DOCS
+            if not TREE_DOCS:
+                return _refresh_tree(expand_all)
+            base = DOC_PREFIX.rstrip("/") + "/" if DOC_PREFIX else ""
+            tree = build_tree([d["key"] for d in TREE_DOCS], base_prefix=base)
+            return render_tree_html(tree, expand_all), gr.update()
 
         def _render_from_key(key: str | None):
             if not key:
                 return "", "<em>未选择文件</em>", ""
-            _, text, html = get_md(key)
+            try:
+                _, doc_type, text, html = get_document(key)
+            except Exception as exc:
+                msg = _esc(str(exc))
+                return download_link_html(key), f"<div class='doc-error'>{msg}</div>", msg
             return download_link_html(key), html, text
 
         def _search(query: str):
             return fulltext_search(query)
 
         def _clear_cache():
-            n = len(MD_CACHE.od)
-            MD_CACHE.clear()
-            return f"<em>已清空缓存（{n} 项）</em>"
+            n = len(DOC_CACHE.od)
+            DOC_CACHE.clear()
+            return f"<em>已清空文档缓存（{n} 项）</em>"
+
+        def _force_reindex():
+            global TREE_DOCS
+            if not TREE_DOCS:
+                TREE_DOCS = list_documents()
+            return sync_elasticsearch(TREE_DOCS, force=True)
 
         def _activate_search_tab():
             return gr.Tabs.update(selected="search")
 
         # 事件绑定
-        demo.load(lambda: _load_tree(True), outputs=tree_html)
-        btn_refresh.click(lambda e: _load_tree(True), outputs=tree_html)
-        btn_expand.click(lambda: True, outputs=expand_state).then(_load_tree, inputs=expand_state, outputs=tree_html)
-        btn_collapse.click(lambda: False, outputs=expand_state).then(_load_tree, inputs=expand_state, outputs=tree_html)
+        demo.load(lambda: _refresh_tree(True), outputs=[tree_html, status_bar])
+        btn_refresh.click(_refresh_tree, inputs=expand_state, outputs=[tree_html, status_bar])
+        btn_expand.click(lambda: True, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar])
+        btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar])
+        btn_clear.click(_clear_cache, outputs=status_bar)
+        btn_reindex.click(_force_reindex, outputs=status_bar)
 
         q.submit(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
         btn_search.click(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
