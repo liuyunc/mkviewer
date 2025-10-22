@@ -42,12 +42,14 @@ def connect() -> Tuple[Minio, str]:
 
 # ==================== 图片链接重写 ====================
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
-
+#IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
 def _to_public_image_url(path: str) -> str:
     p = path.strip().lstrip("./").lstrip("/")
     parts = [quote(seg) for seg in p.split("/")]
-    return IMAGE_PUBLIC_BASE.rstrip("/") + "/" + "/".join(parts)
-
+    return IMAGE_PUBLIC_BASE.rstrip("/") + "/" + "/".join(parts)  //.rstrip("/"): 移除 IMAGE_PUBLIC_BASE 末尾的 /，以避免出现双斜杠。
+#path.strip(): 移除路径字符串开头和结尾的空白字符。
+#.lstrip("./"): 移除字符串开头的 ./ 序列（如果存在）。
+#.lstrip("/"): 移除字符串开头的 / 字符（如果存在）。
 def rewrite_image_links(md_text: str) -> str:
     def repl_md(m):
         alt, url = m.group(1), m.group(2).strip()
