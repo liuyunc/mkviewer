@@ -46,7 +46,9 @@ IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
 def _to_public_image_url(path: str) -> str:
     p = path.strip().lstrip("./").lstrip("/")
     parts = [quote(seg) for seg in p.split("/")]
-    return IMAGE_PUBLIC_BASE.rstrip("/") + "/" + "/".join(parts)  //.rstrip("/"): 移除 IMAGE_PUBLIC_BASE 末尾的 /，以避免出现双斜杠。
+    return IMAGE_PUBLIC_BASE.rstrip("/") + "/" + "/".join(parts)  
+
+#.rstrip("/"): 移除 IMAGE_PUBLIC_BASE 末尾的 /，以避免出现双斜杠。
 #path.strip(): 移除路径字符串开头和结尾的空白字符。
 #.lstrip("./"): 移除字符串开头的 ./ 序列（如果存在）。
 #.lstrip("/"): 移除字符串开头的 / 字符（如果存在）。
