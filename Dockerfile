@@ -6,6 +6,10 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 # 可选：国内源
 ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends antiword \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
