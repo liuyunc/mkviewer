@@ -16,7 +16,7 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
 DOC_BUCKET = os.getenv("DOC_BUCKET", "bucket")
 DOC_PREFIX = os.getenv("DOC_PREFIX", "")
-IMAGE_PUBLIC_BASE = os.getenv("IMAGE_PUBLIC_BASE", "http://10.20.41.24:9005/images")
+IMAGE_PUBLIC_BASE = os.getenv("IMAGE_PUBLIC_BASE", "http://10.20.41.24:9005")
 SITE_TITLE = os.getenv("SITE_TITLE", "通号院文档知识库")
 BIND_HOST = os.getenv("BIND_HOST", "0.0.0.0")
 BIND_PORT = int(os.getenv("BIND_PORT", "7861"))
@@ -155,17 +155,165 @@ def render_tree_html(tree: Dict, expand_all: bool = True) -> str:
     rec(tree)
     return "".join(html) if html else "<em>没有找到 Markdown 文件</em>"
 
+GLOBAL_CSS = """
+<style>
+:root {
+    --brand-primary:#1f6feb;
+    --brand-primary-light:#4c8dff;
+    --brand-bg:#f4f7ff;
+    --brand-card:#ffffff;
+    --brand-text:#1f2933;
+    --brand-muted:#5f6c7d;
+    --brand-border:rgba(31,111,235,0.18);
+    --brand-shadow:0 16px 40px rgba(31,111,235,0.12);
+}
+body, body * {
+    font-family:"PingFang SC","Microsoft YaHei","Source Han Sans SC","Helvetica Neue",Arial,sans-serif !important;
+    color:var(--brand-text);
+}
+body { background:var(--brand-bg); }
+.gradio-container { background:transparent !important; }
+.gradio-container .prose h1,
+.gradio-container .prose h2,
+.gradio-container .prose h3 {
+    color:var(--brand-text);
+    font-weight:600;
+}
+.gradio-container .prose a { color:var(--brand-primary); }
+.gradio-container .prose code { font-family:"Fira Code","JetBrains Mono","SFMono-Regular",Consolas,monospace; }
+.gradio-container button {
+    border-radius:999px !important;
+    font-weight:600;
+}
+.gradio-container button.primary,
+.gradio-container button[aria-label="搜索"],
+.gradio-container button[aria-label="刷新树"] {
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-light));
+    border:none;
+}
+.gradio-container button.primary:hover,
+.gradio-container button[aria-label="搜索"]:hover,
+.gradio-container button[aria-label="刷新树"]:hover {
+    filter:brightness(1.05);
+}
+.gradio-container .block.padded {
+    background:var(--brand-card);
+    border-radius:18px;
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+}
+.mkv-header {
+    padding:18px 22px;
+    margin-bottom:12px;
+    background:var(--brand-card);
+    border-radius:20px;
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+}
+.mkv-header h1 {
+    font-size:1.6rem;
+    margin-bottom:.2rem;
+}
+.mkv-header p {
+    margin:0;
+    color:var(--brand-muted);
+}
+.controls {
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+}
+.controls .gr-button {
+    min-width:96px;
+}
+.sidebar {
+    position:sticky;
+    top:8px;
+    max-height:82vh;
+    overflow:auto;
+    padding:14px 16px;
+    background:linear-gradient(180deg,rgba(76,141,255,0.12),rgba(255,255,255,0.9));
+    border:1px solid var(--brand-border);
+    border-radius:18px;
+    box-shadow:var(--brand-shadow);
+}
+.sidebar::-webkit-scrollbar {
+    width:8px;
+}
+.sidebar::-webkit-scrollbar-thumb {
+    background:rgba(31,111,235,0.28);
+    border-radius:10px;
+}
+.sidebar details { margin-left:.4rem; }
+.sidebar summary {
+    cursor:pointer;
+    padding:4px 8px;
+    border-radius:10px;
+    color:var(--brand-muted);
+}
+.sidebar summary:hover {
+    background:rgba(31,111,235,0.12);
+    color:var(--brand-primary);
+}
+.file {
+    padding:4px 8px;
+    border-radius:8px;
+    color:var(--brand-text);
+}
+.file:hover {
+    background:rgba(31,111,235,0.12);
+}
+.file a {
+    color:var(--brand-primary);
+    text-decoration:none;
+    font-weight:500;
+}
+.file a:hover {
+    text-decoration:underline;
+}
+.badge {
+    font-size:.82rem;
+    color:var(--brand-muted);
+}
+.search-panel {
+    padding:12px 16px;
+    background:var(--brand-card);
+    border-radius:16px;
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+}
+.search-panel mark {
+    background:rgba(31,111,235,0.2);
+    color:var(--brand-text);
+    border-radius:4px;
+    padding:0 2px;
+}
+.gradio-container .tab-nav button {
+    font-weight:600;
+}
+.gradio-container .tab-nav button[aria-selected="true"] {
+    color:var(--brand-primary);
+}
+</style>
+"""
+
 TREE_CSS = """
 <style>
-:root { --tree-bg:#fafafa; --tree-border:#e5e7eb; --hover:#f3f4f6; }
-.sidebar { position:sticky; top:8px; max-height:82vh; overflow:auto; padding:8px 10px; background:var(--tree-bg); border:1px solid var(--tree-border); border-radius:10px; }
-details { margin-left:.4rem; }
-summary { cursor:pointer; padding:2px 6px; border-radius:8px; }
-summary:hover { background:var(--hover); }
-.file { padding:2px 6px; border-radius:6px; }
-.file:hover { background:var(--hover); }
-.controls { display:flex; gap:8px; flex-wrap:wrap; }
-.badge { font-size:.82rem; color:#374151; }
+.markdown-body table {
+    border-collapse:collapse;
+    width:100%;
+}
+.markdown-body th,
+.markdown-body td {
+    border:1px solid rgba(31,111,235,0.12);
+    padding:6px 10px;
+}
+.markdown-body blockquote {
+    border-left:4px solid rgba(31,111,235,0.25);
+    margin-left:0;
+    padding-left:12px;
+    color:var(--brand-muted);
+}
 </style>
 """
 
@@ -217,9 +365,12 @@ def download_link_html(key: str) -> str:
 # ==================== Gradio UI ====================
 
 def ui_app():
-    with gr.Blocks(title=SITE_TITLE, theme=gr.themes.Soft()) as demo:
-        gr.HTML(TREE_CSS)
-        gr.Markdown(f"# {SITE_TITLE}Endpoint：**{', '.join(MINIO_ENDPOINTS)}**文档桶：**{DOC_BUCKET}**，前缀：**{DOC_PREFIX or '/'}**  ")
+    with gr.Blocks(title=SITE_TITLE, theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate")) as demo:
+        gr.HTML(GLOBAL_CSS + TREE_CSS)
+        gr.HTML(
+            f"<div class='mkv-header'><h1>{_esc(SITE_TITLE)}</h1>"
+            f"<p>Endpoint：<strong>{_esc(', '.join(MINIO_ENDPOINTS))}</strong> · 文档桶：<strong>{_esc(DOC_BUCKET)}</strong> · 前缀：<strong>{_esc(DOC_PREFIX or '/')}</strong></p></div>"
+        )
         with gr.Row():
             with gr.Column(scale=1, min_width=340):
                 gr.Markdown("### 📁 文档目录")
@@ -232,13 +383,14 @@ def ui_app():
                 btn_search = gr.Button("搜索")
                 tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar"])
             with gr.Column(scale=4):
-                with gr.Tab("预览"):
-                    dl_html = gr.HTML("")
-                    html_view = gr.HTML("<em>请选择左侧文件…</em>")
-                with gr.Tab("源文件"):
-                    md_view = gr.Textbox(lines=26, interactive=False)
-                with gr.Tab("全文搜索"):
-                    search_out = gr.HTML("<em>在左侧输入关键词后点击“搜索”</em>")
+                with gr.Tabs(selected="preview", elem_id="content-tabs") as content_tabs:
+                    with gr.TabItem("预览", id="preview"):
+                        dl_html = gr.HTML("")
+                        html_view = gr.HTML("<em>请选择左侧文件…</em>")
+                    with gr.TabItem("源文件", id="source"):
+                        md_view = gr.Textbox(lines=26, interactive=False)
+                    with gr.TabItem("全文搜索", id="search"):
+                        search_out = gr.HTML("<em>在左侧输入关键词后点击“搜索”</em>", elem_classes=["search-panel"])
 
         # 内部状态：是否展开全部
         expand_state = gr.State(True)
@@ -263,14 +415,17 @@ def ui_app():
             MD_CACHE.clear()
             return f"<em>已清空缓存（{n} 项）</em>"
 
+        def _activate_search_tab():
+            return gr.Tabs.update(selected="search")
+
         # 事件绑定
         demo.load(lambda: _load_tree(True), outputs=tree_html)
         btn_refresh.click(lambda e: _load_tree(True), outputs=tree_html)
         btn_expand.click(lambda: True, outputs=expand_state).then(_load_tree, inputs=expand_state, outputs=tree_html)
         btn_collapse.click(lambda: False, outputs=expand_state).then(_load_tree, inputs=expand_state, outputs=tree_html)
 
-        q.submit(_search, inputs=q, outputs=search_out)
-        btn_search.click(_search, inputs=q, outputs=search_out)
+        q.submit(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
+        btn_search.click(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
 
         # 解析 URL 参数中的 key 并渲染
         def on_load_with_req(request: gr.Request):
