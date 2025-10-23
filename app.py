@@ -10,10 +10,11 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 
 import gradio as gr
-from markdown import markdown
+from markdown import Markdown
 from minio import Minio
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import NotFoundError
+from fastapi.responses import JSONResponse
 
 try:
     from elastic_transport import Transport
@@ -413,8 +414,36 @@ SUPPORTED_EXTS = {
     ".docx": "docx",
     ".doc": "doc",
 }
-MARKDOWN_EXTS = (".md", ".markdown")
+MARKDOWN_EXTENSIONS = ["fenced_code", "tables", "codehilite", "toc"]
 #IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
+
+
+def _render_markdown_toc(tokens: List[Dict[str, object]]) -> str:
+    """Render a nested table of contents structure from Markdown toc_tokens."""
+
+    def _build(items: List[Dict[str, object]]) -> str:
+        parts: List[str] = []
+        for item in items:
+            name = str(item.get("name") or "").strip()
+            anchor = str(item.get("id") or "").strip()
+            if not name or not anchor:
+                continue
+            parts.append("<li>")
+            parts.append(f"<a href='#{_esc(anchor)}'>{_esc(name)}</a>")
+            children = item.get("children") or []
+            if isinstance(children, list):
+                child_html = _build(children)
+                if child_html:
+                    parts.append(child_html)
+            parts.append("</li>")
+        if not parts:
+            return ""
+        return "<ul class='toc-list'>" + "".join(parts) + "</ul>"
+
+    tree_html = _build(tokens)
+    if not tree_html:
+        return ""
+    return "<div class='toc-tree'>" + tree_html + "</div>"
 def _to_public_image_url(path: str) -> str:
     p = path.strip().lstrip("./").lstrip("/")
     parts = [quote(seg) for seg in p.split("/")]
@@ -478,7 +507,7 @@ class LRU:
     def clear(self):
         self.od.clear()
 
-DOC_CACHE = LRU(512)  # key -> (etag, doc_type, text, html)
+DOC_CACHE = LRU(512)  # key -> (etag, doc_type, text, html, toc)
 
 TREE_DOCS: List[Dict[str, str]] = []
 
@@ -507,8 +536,8 @@ def _plain_text_html(text: str) -> str:
     return "<div class='doc-preview'>" + esc.replace("\n", "<br>") + "</div>"
 
 
-def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, str, str]:
-    """返回 (etag, doc_type, text, html)。"""
+def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, str, str, str]:
+    """返回 (etag, doc_type, text, html, toc)。"""
     c, _ = connect()
     ext = os.path.splitext(key)[1].lower()
     doc_type = SUPPORTED_EXTS.get(ext)
@@ -526,10 +555,13 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     data = resp.read()
     resp.close(); resp.release_conn()
 
+    toc_html = ""
     if doc_type == "markdown":
         text = data.decode("utf-8", errors="ignore")
         text2 = rewrite_image_links(text)
-        rendered = markdown(text2, extensions=["fenced_code", "tables", "codehilite"])
+        md_renderer = Markdown(extensions=MARKDOWN_EXTENSIONS, extension_configs={"toc": {"permalink": False}})
+        rendered = md_renderer.convert(text2)
+        toc_html = _render_markdown_toc(getattr(md_renderer, "toc_tokens", []))
         html = "<div class='markdown-body'>" + rendered + "</div>"
     elif doc_type == "docx":
         text, html = _docx_from_bytes(data)
@@ -570,8 +602,8 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
         raise RuntimeError(f"未知文档类型：{doc_type}")
 
     html_with_mathjax = html + MATHJAX_TRIGGER_SNIPPET
-    DOC_CACHE.set(key, (etag, doc_type, text, html_with_mathjax))
-    return etag, doc_type, text, html_with_mathjax
+    DOC_CACHE.set(key, (etag, doc_type, text, html_with_mathjax, toc_html))
+    return etag, doc_type, text, html_with_mathjax, toc_html
 
 # ==================== 目录树 ====================
 
@@ -686,7 +718,7 @@ def sync_elasticsearch(docs: List[Dict[str, str]], force: bool = False) -> str:
         if not force and existing_map.get(key) == etag_hint:
             continue
         try:
-            etag, doc_type, text, _ = get_document(key, known_etag=etag_hint)
+            etag, doc_type, text, _, _ = get_document(key, known_etag=etag_hint)
         except Exception as exc:
             errors.append(f"{key}: {exc}")
             continue
@@ -719,21 +751,35 @@ def sync_elasticsearch(docs: List[Dict[str, str]], force: bool = False) -> str:
 GLOBAL_CSS = """
 <style>
 :root {
-    --brand-primary:#1f6feb;
-    --brand-primary-light:#4c8dff;
-    --brand-bg:#f4f7ff;
+    --brand-primary:#1458d6;
+    --brand-primary-soft:#3c7bff;
+    --brand-primary-ghost:rgba(20,88,214,0.08);
+    --brand-bg:#f1f5fb;
     --brand-card:#ffffff;
-    --brand-text:#1f2933;
-    --brand-muted:#5f6c7d;
-    --brand-border:rgba(31,111,235,0.18);
-    --brand-shadow:0 16px 40px rgba(31,111,235,0.12);
+    --brand-text:#1f2937;
+    --brand-muted:#64748b;
+    --brand-border:rgba(20,88,214,0.16);
+    --brand-shadow:0 18px 42px rgba(20,88,214,0.15);
+    --brand-radius:22px;
 }
 body, body * {
     font-family:"PingFang SC","Microsoft YaHei","Source Han Sans SC","Helvetica Neue",Arial,sans-serif !important;
     color:var(--brand-text);
 }
-body { background:var(--brand-bg); }
-.gradio-container { background:transparent !important; }
+body {
+    background:linear-gradient(160deg,#eef3fc 0%,#f8fbff 55%,#ffffff 100%);
+}
+.gradio-container {
+    background:transparent !important;
+    max-width:1320px;
+    margin:0 auto;
+    padding:12px 32px 48px;
+}
+.gradio-container .block.padded {
+    background:transparent;
+    border:none;
+    box-shadow:none;
+}
 .gradio-container .prose h1,
 .gradio-container .prose h2,
 .gradio-container .prose h3 {
@@ -741,162 +787,405 @@ body { background:var(--brand-bg); }
     font-weight:600;
 }
 .gradio-container .prose a { color:var(--brand-primary); }
-.gradio-container .prose code { font-family:"Fira Code","JetBrains Mono","SFMono-Regular",Consolas,monospace; }
+.gradio-container .prose code {
+    font-family:"Fira Code","JetBrains Mono","SFMono-Regular",Consolas,monospace;
+    background:var(--brand-primary-ghost);
+    padding:2px 6px;
+    border-radius:6px;
+}
 .gradio-container button {
     border-radius:999px !important;
     font-weight:600;
+    transition:transform .2s ease,box-shadow .2s ease;
 }
 .gradio-container button.primary,
 .gradio-container button[aria-label="搜索"],
 .gradio-container button[aria-label="刷新树"] {
-    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-light));
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
     border:none;
+    color:#fff;
 }
 .gradio-container button.primary:hover,
 .gradio-container button[aria-label="搜索"]:hover,
 .gradio-container button[aria-label="刷新树"]:hover {
-    filter:brightness(1.05);
+    transform:translateY(-1px);
+    box-shadow:0 12px 26px rgba(20,88,214,0.25);
 }
-.gradio-container .block.padded {
+.mkv-topbar {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
     background:var(--brand-card);
-    border-radius:18px;
+    border-radius:var(--brand-radius);
     border:1px solid var(--brand-border);
+    padding:18px 26px;
     box-shadow:var(--brand-shadow);
+    position:sticky;
+    top:12px;
+    z-index:10;
 }
-.mkv-header {
-    padding:18px 22px;
-    margin-bottom:12px;
-    background:var(--brand-card);
-    border-radius:20px;
-    border:1px solid var(--brand-border);
-    box-shadow:var(--brand-shadow);
+.mkv-brand {
+    display:flex;
+    align-items:center;
+    gap:14px;
 }
-.mkv-header h1 {
-    font-size:1.6rem;
-    margin-bottom:.2rem;
+.mkv-logo {
+    width:46px;
+    height:46px;
+    border-radius:14px;
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:#fff;
+    font-weight:700;
+    font-size:1.2rem;
+    letter-spacing:.02em;
+    box-shadow:0 12px 22px rgba(20,88,214,0.28);
 }
-.mkv-header p {
-    margin:0;
+.mkv-brand-title {
+    font-size:1.32rem;
+    font-weight:700;
+}
+.mkv-brand-subtitle {
+    margin-top:2px;
+    font-size:.92rem;
     color:var(--brand-muted);
 }
-.controls {
+.mkv-links {
+    display:flex;
+    align-items:center;
+    gap:16px;
+    font-size:.95rem;
+}
+.mkv-link {
+    color:var(--brand-primary);
+    font-weight:600;
+    text-decoration:none;
+    padding:8px 16px;
+    border-radius:999px;
+    background:var(--brand-primary-ghost);
+    transition:all .2s ease;
+}
+.mkv-link:hover {
+    color:#fff;
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
+    box-shadow:0 12px 26px rgba(20,88,214,0.2);
+}
+.mkv-hero {
+    margin:22px 0 18px;
+    padding:28px 32px;
+    border-radius:var(--brand-radius);
+    background:var(--brand-card);
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+}
+.mkv-hero h1 {
+    font-size:1.8rem;
+    margin-bottom:10px;
+}
+.mkv-hero p {
+    margin:0;
+    color:var(--brand-muted);
+    line-height:1.6;
+}
+.mkv-meta-bar {
+    display:flex;
+    flex-wrap:wrap;
+    gap:12px;
+    align-items:center;
+    justify-content:space-between;
+    margin-top:14px;
+}
+.mkv-meta {
+    display:flex;
+    flex-wrap:wrap;
+    gap:12px;
+    font-size:.95rem;
+}
+.mkv-meta span {
+    padding:6px 12px;
+    border-radius:999px;
+    background:var(--brand-primary-ghost);
+    color:var(--brand-primary);
+}
+.mkv-meta-link {
+    margin-left:auto;
+    display:flex;
+    align-items:center;
+}
+.mkv-meta-link .mkv-link {
+    white-space:nowrap;
+}
+.gr-row {
+    gap:24px !important;
+}
+.sidebar-col .controls {
     display:flex;
     gap:10px;
     flex-wrap:wrap;
+    margin-bottom:12px;
 }
-.controls .gr-button {
-    min-width:96px;
-}
-.status-bar {
-    margin:8px 0 6px;
+.sidebar-heading h3 {
+    margin-bottom:12px !important;
     color:var(--brand-muted);
-    font-size:.92rem;
+    letter-spacing:.02em;
 }
-.status-bar em {
+.sidebar-col .gr-button { min-width:104px; }
+.sidebar-col .status-bar {
+    margin:4px 0 8px;
     color:var(--brand-muted);
+    font-size:.9rem;
 }
-.sidebar {
+.sidebar-col .status-bar em { color:var(--brand-muted); }
+.sidebar-card {
     position:sticky;
-    top:8px;
-    max-height:82vh;
-    overflow:auto;
-    padding:14px 16px;
-    background:linear-gradient(180deg,rgba(76,141,255,0.12),rgba(255,255,255,0.9));
+    top:60px;
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+}
+.sidebar-tree {
+    padding:18px 20px;
+    background:var(--brand-card);
+    border-radius:var(--brand-radius);
     border:1px solid var(--brand-border);
-    border-radius:18px;
     box-shadow:var(--brand-shadow);
+    max-height:72vh;
+    overflow:auto;
 }
-.sidebar::-webkit-scrollbar {
-    width:8px;
-}
-.sidebar::-webkit-scrollbar-thumb {
-    background:rgba(31,111,235,0.28);
+.sidebar-tree::-webkit-scrollbar { width:8px; }
+.sidebar-tree::-webkit-scrollbar-thumb {
+    background:rgba(20,88,214,0.25);
     border-radius:10px;
 }
-.sidebar details { margin-left:.4rem; }
-.sidebar summary {
+.sidebar-tree details { margin-left:.6rem; }
+.sidebar-tree summary {
     cursor:pointer;
     padding:4px 8px;
     border-radius:10px;
     color:var(--brand-muted);
+    transition:background .2s ease,color .2s ease;
 }
-.sidebar summary:hover {
-    background:rgba(31,111,235,0.12);
+.sidebar-tree summary:hover {
+    background:rgba(20,88,214,0.12);
     color:var(--brand-primary);
 }
-.file {
+.sidebar-tree .file {
     padding:4px 8px;
-    border-radius:8px;
+    border-radius:9px;
     color:var(--brand-text);
+    transition:background .2s ease;
 }
-.file:hover {
-    background:rgba(31,111,235,0.12);
+.sidebar-tree .file:hover {
+    background:rgba(20,88,214,0.12);
 }
-.file a {
+.sidebar-tree .file a {
     color:var(--brand-primary);
     text-decoration:none;
     font-weight:500;
 }
-.file a:hover {
-    text-decoration:underline;
+.sidebar-tree .file a:hover { text-decoration:underline; }
+.search-input textarea,
+.search-input input {
+    border-radius:16px !important;
+    border:1px solid var(--brand-border) !important;
+    background:#f8fbff !important;
+    padding:10px 16px !important;
+    font-size:.95rem !important;
+    box-shadow:none !important;
+}
+.search-title {
+    font-weight:600;
+    color:var(--brand-muted);
+    margin:12px 0 6px;
+    letter-spacing:.02em;
+}
+.search-stack {
+    display:flex;
+    flex-direction:column;
+    gap:10px;
+}
+.search-button button {
+    width:100%;
+    border-radius:16px !important;
+    padding:10px 0 !important;
+}
+.content-col {
+    display:flex;
+    flex-direction:column;
+    gap:18px;
+}
+.content-card {
+    background:var(--brand-card);
+    border-radius:var(--brand-radius);
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+    padding:18px 24px;
+}
+.toc-col {
+    position:sticky;
+    top:126px;
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+    align-self:flex-start;
+}
+.toc-heading h3 {
+    margin-bottom:12px !important;
+    color:var(--brand-muted);
+}
+.toc-card {
+    background:var(--brand-card);
+    border-radius:var(--brand-radius);
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+    padding:18px 20px;
+    max-height:72vh;
+    overflow:auto;
+}
+.toc-card::-webkit-scrollbar { width:8px; }
+.toc-card::-webkit-scrollbar-thumb {
+    background:rgba(20,88,214,0.25);
+    border-radius:10px;
+}
+.toc-tree {
+    font-size:.95rem;
+    line-height:1.6;
+}
+.toc-tree > .toc-list { padding-left:0; }
+.toc-tree ul {
+    list-style:none;
+    padding-left:1.1rem;
+    margin:6px 0;
+}
+.toc-tree li { margin:4px 0; }
+.toc-tree a {
+    color:var(--brand-primary);
+    text-decoration:none;
+    font-weight:500;
+}
+.toc-tree a:hover { text-decoration:underline; }
+.toc-empty {
+    color:var(--brand-muted);
+    font-size:.95rem;
+    line-height:1.6;
+}
+.download-panel {
+    margin-bottom:12px;
+    font-size:.95rem;
+    color:var(--brand-muted);
+}
+.download-panel a {
+    color:var(--brand-primary);
+    font-weight:600;
+    text-decoration:none;
+}
+.download-panel code {
+    display:inline-block;
+    margin-top:4px;
+    font-size:.88rem;
+}
+.doc-preview,
+.plaintext-view textarea {
+    width:100%;
+    border-radius:18px !important;
+    border:1px solid var(--brand-border) !important;
+    background:#ffffff !important;
+    box-shadow:var(--brand-shadow);
+}
+.doc-preview {
+    padding:0;
+    margin:0;
+    line-height:1.72;
+    font-size:1rem;
+}
+.doc-preview #doc-html-view {
+    padding:20px 22px;
+}
+.plaintext-view textarea {
+    min-height:420px !important;
+    font-family:"Fira Code","JetBrains Mono","SFMono-Regular",Consolas,monospace !important;
+    font-size:.92rem !important;
+    color:#0f172a !important;
+}
+.gradio-container .tab-nav button {
+    font-weight:600;
+    padding:10px 18px;
+    border-radius:999px;
+}
+.gradio-container .tab-nav button[aria-selected="true"] {
+    color:var(--brand-primary);
+    background:var(--brand-primary-ghost);
+}
+.search-panel {
+    padding:18px 22px;
+    background:var(--brand-card);
+    border-radius:var(--brand-radius);
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+}
+.search-panel mark {
+    background:rgba(20,88,214,0.18);
+    color:var(--brand-text);
+    border-radius:4px;
+    padding:0 3px;
+}
+.search-snippet {
+    margin-left:1.2rem;
+    color:#334155;
+    font-size:.94rem;
+}
+.search-snippet mark {
+    background:rgba(20,88,214,0.18);
+    color:var(--brand-text);
+    border-radius:4px;
+    padding:0 3px;
 }
 .badge {
     font-size:.82rem;
     color:var(--brand-muted);
 }
-.search-panel {
-    padding:12px 16px;
-    background:var(--brand-card);
-    border-radius:16px;
-    border:1px solid var(--brand-border);
-    box-shadow:var(--brand-shadow);
-}
-.search-panel mark {
-    background:rgba(31,111,235,0.2);
-    color:var(--brand-text);
-    border-radius:4px;
-    padding:0 2px;
-}
-.search-snippet {
-    margin-left:1.2rem;
-    color:#374151;
-    font-size:.92rem;
-}
-.search-snippet mark {
-    background:rgba(31,111,235,0.2);
-    color:var(--brand-text);
-    border-radius:4px;
-    padding:0 2px;
-}
-.gradio-container .tab-nav button {
-    font-weight:600;
-}
-.gradio-container .tab-nav button[aria-selected="true"] {
-    color:var(--brand-primary);
-}
-.doc-preview,
-.docx-preview {
-    margin-top:.6rem;
-    padding:14px 18px;
-    background:var(--brand-card);
-    border-radius:18px;
-    border:1px solid var(--brand-border);
-    box-shadow:var(--brand-shadow);
-    line-height:1.62;
-}
-.doc-preview {
-    white-space:pre-wrap;
-}
-.docx-preview p {
-    margin:0 0 .8em 0;
-}
 .doc-error {
     margin-top:.6rem;
-    padding:12px 16px;
-    border-radius:12px;
+    padding:14px 18px;
+    border-radius:14px;
     background:rgba(239,68,68,0.12);
     color:#b91c1c;
-    border:1px solid rgba(239,68,68,0.35);
+    border:1px solid rgba(239,68,68,0.25);
+}
+.markdown-body table {
+    border-collapse:collapse;
+    width:100%;
+}
+.markdown-body th,
+.markdown-body td {
+    border:1px solid rgba(20,88,214,0.18);
+    padding:6px 10px;
+}
+.markdown-body blockquote {
+    border-left:4px solid rgba(20,88,214,0.25);
+    margin-left:0;
+    padding-left:12px;
+    color:var(--brand-muted);
+}
+@media (max-width:1100px) {
+    .gradio-container {
+        padding:12px 18px 40px;
+    }
+    .mkv-topbar {
+        flex-direction:column;
+        gap:12px;
+        align-items:flex-start;
+    }
+    .sidebar-card { position:static; }
+    .sidebar-tree { max-height:unset; }
+    .toc-col { position:static; }
+    .toc-card { max-height:unset; }
+}
+@media (max-width:860px) {
+    .gradio-container { padding:10px 12px 32px; }
+    .gr-row { flex-direction:column; }
 }
 </style>
 """
@@ -909,11 +1198,11 @@ TREE_CSS = """
 }
 .markdown-body th,
 .markdown-body td {
-    border:1px solid rgba(31,111,235,0.12);
+    border:1px solid rgba(20,88,214,0.18);
     padding:6px 10px;
 }
 .markdown-body blockquote {
-    border-left:4px solid rgba(31,111,235,0.25);
+    border-left:4px solid rgba(20,88,214,0.25);
     margin-left:0;
     padding-left:12px;
     color:var(--brand-muted);
@@ -1003,6 +1292,60 @@ def download_link_html(key: str) -> str:
 
 # ==================== Gradio UI ====================
 
+
+def _hero_html(doc_total: Optional[int] = None) -> str:
+    if doc_total is None:
+        total_span = "<span>文档总数统计中…</span>"
+    else:
+        total_span = f"<span>文档总数：<strong>{doc_total}</strong></span>"
+    endpoints = ", ".join([e.strip() for e in MINIO_ENDPOINTS if e.strip()])
+    endpoint_text = _esc(endpoints) if endpoints else "-"
+    meta_items = [
+        total_span,
+        f"<span>Endpoint：{endpoint_text}</span>",
+        f"<span>文档桶：{_esc(DOC_BUCKET)}</span>",
+        f"<span>前缀：{_esc(DOC_PREFIX or '/')}</span>",
+    ]
+    feedback_link = (
+        "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' "
+        "target='_blank' rel='noopener'>文档问题反馈</a>"
+    )
+    return (
+        f"""
+        <header class='mkv-topbar'>
+            <div class='mkv-brand'>
+                <span class='mkv-logo'>MK</span>
+                <div>
+                    <div class='mkv-brand-title'>{_esc(SITE_TITLE)}</div>
+                    <div class='mkv-brand-subtitle'>MinIO 文档知识库</div>
+                </div>
+            </div>
+        </header>
+        <section class='mkv-hero'>
+            <h1>{_esc(SITE_TITLE)}</h1>
+            <p>在这里浏览、检索和预览来自 MinIO 的知识文档，快速定位你需要的内容。</p>
+            <div class='mkv-meta-bar'>
+                <div class='mkv-meta'>{''.join(meta_items)}</div>
+                <div class='mkv-meta-link'>{feedback_link}</div>
+            </div>
+        </section>
+        """
+    )
+
+
+def _manifest_payload() -> Dict[str, object]:
+    short_name = SITE_TITLE if len(SITE_TITLE) <= 12 else SITE_TITLE[:12]
+    return {
+        "name": SITE_TITLE,
+        "short_name": short_name,
+        "start_url": ".",
+        "display": "standalone",
+        "background_color": "#ffffff",
+        "theme_color": "#1458d6",
+        "icons": [],
+    }
+
+
 def ui_app():
     with gr.Blocks(
         title=SITE_TITLE,
@@ -1010,13 +1353,10 @@ def ui_app():
         head=MATHJAX_HEAD,
     ) as demo:
         gr.HTML(GLOBAL_CSS + TREE_CSS)
-        gr.HTML(
-            f"<div class='mkv-header'><h1>{_esc(SITE_TITLE)}</h1>"
-            f"<p>Endpoint：<strong>{_esc(', '.join(MINIO_ENDPOINTS))}</strong> · 文档桶：<strong>{_esc(DOC_BUCKET)}</strong> · 前缀：<strong>{_esc(DOC_PREFIX or '/')}</strong></p></div>"
-        )
-        with gr.Row():
-            with gr.Column(scale=1, min_width=340):
-                gr.Markdown("### 📁 文档目录")
+        hero_html = gr.HTML(_hero_html())
+        with gr.Row(elem_classes=["gr-row"]):
+            with gr.Column(scale=1, min_width=340, elem_classes=["sidebar-col"]):
+                gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
                 with gr.Row(elem_classes=["controls"]):
                     btn_refresh = gr.Button("刷新树", variant="secondary")
                     btn_expand = gr.Button("展开全部")
@@ -1024,18 +1364,33 @@ def ui_app():
                     btn_clear = gr.Button("清空缓存")
                     btn_reindex = gr.Button("重建索引", variant="secondary")
                 status_bar = gr.HTML("", elem_classes=["status-bar"])
-                q = gr.Textbox(label="全文搜索", placeholder="输入关键字… 然后回车或点搜索")
-                btn_search = gr.Button("搜索")
-                tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar"])
-            with gr.Column(scale=4):
-                with gr.Tabs(selected="preview", elem_id="content-tabs") as content_tabs:
+                with gr.Column(elem_classes=["sidebar-card"]):
+                    tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
+                gr.HTML("<div class='search-title'>全文搜索</div>", elem_classes=["search-title"])
+                with gr.Column(elem_classes=["search-stack"]):
+                    q = gr.Textbox(
+                        show_label=False,
+                        placeholder="输入关键字… 然后回车或点搜索",
+                        elem_classes=["search-input"],
+                    )
+                    btn_search = gr.Button("搜索", elem_classes=["search-button"])
+            with gr.Column(scale=5, elem_classes=["content-col"]):
+                with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
+                    with gr.TabItem("目录", id="toc"):
+                        toc_panel = gr.HTML(
+                            "<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>",
+                            elem_classes=["toc-card"],
+                        )
                     with gr.TabItem("预览", id="preview"):
-                        dl_html = gr.HTML("")
-                        html_view = gr.HTML("<em>请选择左侧文件…</em>", elem_id="doc-html-view")
+                        dl_html = gr.HTML("", elem_classes=["download-panel"])
+                        html_view = gr.HTML("<em>请选择左侧文件…</em>", elem_id="doc-html-view", elem_classes=["doc-preview"])
                     with gr.TabItem("文本内容", id="source"):
-                        md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本")
+                        md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
                     with gr.TabItem("全文搜索", id="search"):
-                        search_out = gr.HTML("<em>在左侧输入关键词后点击“搜索”（由 Elasticsearch 提供支持）</em>", elem_classes=["search-panel"])
+                        search_out = gr.HTML(
+                            "<em>在左侧输入关键词后点击“搜索”（由 Elasticsearch 提供支持）</em>",
+                            elem_classes=["search-panel"],
+                        )
 
         # 内部状态：是否展开全部
         expand_state = gr.State(True)
@@ -1047,7 +1402,7 @@ def ui_app():
             base = DOC_PREFIX.rstrip("/") + "/" if DOC_PREFIX else ""
             tree = build_tree([d["key"] for d in docs], base_prefix=base)
             status = sync_elasticsearch(docs)
-            return render_tree_html(tree, expand_all), status
+            return render_tree_html(tree, expand_all), status, _hero_html(len(docs))
 
         def _render_cached_tree(expand_all: bool):
             global TREE_DOCS
@@ -1055,17 +1410,23 @@ def ui_app():
                 return _refresh_tree(expand_all)
             base = DOC_PREFIX.rstrip("/") + "/" if DOC_PREFIX else ""
             tree = build_tree([d["key"] for d in TREE_DOCS], base_prefix=base)
-            return render_tree_html(tree, expand_all), gr.update()
+            return render_tree_html(tree, expand_all), gr.update(), gr.update()
 
         def _render_from_key(key: str | None):
             if not key:
-                return "", "<em>未选择文件</em>", ""
+                return "", "<em>未选择文件</em>", "", "<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>"
             try:
-                _, doc_type, text, html = get_document(key)
+                _, doc_type, text, html, toc = get_document(key)
             except Exception as exc:
                 msg = _esc(str(exc))
-                return download_link_html(key), f"<div class='doc-error'>{msg}</div>", msg
-            return download_link_html(key), html, text
+                return download_link_html(key), f"<div class='doc-error'>{msg}</div>", msg, "<div class='toc-empty'>无法生成目录</div>"
+
+            if doc_type == "markdown":
+                toc_html = toc or "<div class='toc-empty'>文档中暂无可用标题</div>"
+            else:
+                toc_html = "<div class='toc-empty'>当前文档类型未提供目录</div>"
+
+            return download_link_html(key), html, text, toc_html
 
         def _search(query: str):
             return fulltext_search(query)
@@ -1085,10 +1446,10 @@ def ui_app():
             return gr.update(selected="search")
 
         # 事件绑定
-        demo.load(lambda: _refresh_tree(True), outputs=[tree_html, status_bar])
-        btn_refresh.click(_refresh_tree, inputs=expand_state, outputs=[tree_html, status_bar])
-        btn_expand.click(lambda: True, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar])
-        btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar])
+        demo.load(lambda: _refresh_tree(True), outputs=[tree_html, status_bar, hero_html])
+        btn_refresh.click(_refresh_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
+        btn_expand.click(lambda: True, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
+        btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_clear.click(_clear_cache, outputs=status_bar)
         btn_reindex.click(_force_reindex, outputs=status_bar)
 
@@ -1100,9 +1461,17 @@ def ui_app():
             key = request.query_params.get("key") if request and request.query_params else None
             return _render_from_key(key)
 
-        demo.load(on_load_with_req, outputs=[dl_html, html_view, md_view])
+        demo.load(on_load_with_req, outputs=[dl_html, html_view, md_view, toc_panel])
     return demo
 
 if __name__ == "__main__":
-    app = ui_app()
-    app.queue().launch(server_name=BIND_HOST, server_port=BIND_PORT, show_api=False)
+    demo = ui_app()
+    demo = demo.queue()
+    app = demo
+    fastapi_app = demo.app
+
+    @fastapi_app.get("/manifest.json")
+    def manifest_route():  # pragma: no cover - FastAPI integration
+        return JSONResponse(_manifest_payload())
+
+    demo.launch(server_name=BIND_HOST, server_port=BIND_PORT, show_api=False)
