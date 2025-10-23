@@ -261,6 +261,19 @@ def ensure_es_index(es: Elasticsearch) -> None:
         },
     )
 
+
+def _es_search_request(es: Elasticsearch, body: Dict, params: Optional[Dict] = None):
+    """Execute a search request while preserving compatibility headers."""
+    transport = getattr(es, "transport", None)
+    if transport is None:  # pragma: no cover - defensive guard for unexpected clients
+        raise RuntimeError("Elasticsearch 客户端缺少底层 transport")
+    return transport.perform_request(
+        "POST",
+        f"/{ES_INDEX}/_search",
+        params=params,
+        body=body,
+    )
+
 # ==================== 图片链接重写 ====================
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
 # 支持的文档类型
@@ -463,7 +476,14 @@ def sync_elasticsearch(docs: List[Dict[str, str]], force: bool = False) -> str:
         return f"<em>索引同步失败：{_esc(str(exc))}</em>"
 
     try:
-        existing_resp = es.search(index=ES_INDEX, query={"match_all": {}}, size=10000, _source=["etag"])
+        existing_resp = _es_search_request(
+            es,
+            {
+                "size": 10000,
+                "query": {"match_all": {}},
+                "_source": ["etag"],
+            },
+        )
         existing_map = {hit["_id"]: hit["_source"].get("etag", "") for hit in existing_resp.get("hits", {}).get("hits", [])}
     except NotFoundError:
         existing_map = {}
@@ -752,14 +772,16 @@ def fulltext_search(query: str) -> str:
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
         return f"<em>搜索服务不可用：{_esc(str(exc))}</em>"
     try:
-        search_kwargs = dict(
-            index=ES_INDEX,
-            query={"multi_match": {"query": query, "fields": ["content"]}},
-            size=200,
-            highlight={
-                "pre_tags": ["<mark>"],
-                "post_tags": ["</mark>"],
-                "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
+        resp = _es_search_request(
+            es,
+            {
+                "size": 200,
+                "query": {"multi_match": {"query": query, "fields": ["content"]}},
+                "highlight": {
+                    "pre_tags": ["<mark>"],
+                    "post_tags": ["</mark>"],
+                    "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
+                },
             },
             params={"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET},
         )
