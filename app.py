@@ -43,24 +43,38 @@ ES_TIMEOUT = int(os.getenv("ES_TIMEOUT", "10"))
 
 ES_ENABLED = bool(ES_HOSTS)
 
-MATHJAX_SNIPPET = """
+MATHJAX_HEAD = """
 <script>
 window.MathJax = window.MathJax || {
     tex: {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]},
     svg: {fontCache: 'global'}
 };
-if (!window.__MKV_MATHJAX_LOADING__) {
-    window.__MKV_MATHJAX_LOADING__ = true;
-    var script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js';
-    script.async = true;
-    script.onload = function() {
-        window.MathJax && window.MathJax.typesetPromise && window.MathJax.typesetPromise();
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<script>
+(function setupMathJaxObserver() {
+    const targetId = 'doc-html-view';
+    const ensureObserver = () => {
+        const target = document.getElementById(targetId);
+        if (!target) {
+            requestAnimationFrame(ensureObserver);
+            return;
+        }
+        const trigger = () => {
+            if (window.MathJax && window.MathJax.typesetPromise) {
+                window.MathJax.typesetPromise([target]).catch(() => {});
+            }
+        };
+        const observer = new MutationObserver(() => trigger());
+        observer.observe(target, {childList: true, subtree: true});
+        trigger();
     };
-    document.head.appendChild(script);
-} else if (window.MathJax && window.MathJax.typesetPromise) {
-    window.MathJax.typesetPromise();
-}
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', ensureObserver);
+    } else {
+        ensureObserver();
+    }
+})();
 </script>
 """
 
@@ -97,6 +111,10 @@ def es_connect() -> Elasticsearch:
         "hosts": ES_HOSTS,
         "verify_certs": ES_VERIFY_CERTS,
         "request_timeout": ES_TIMEOUT,
+    }
+    kwargs["headers"] = {
+        "Accept": "application/vnd.elasticsearch+json; compatible-with=8",
+        "Content-Type": "application/vnd.elasticsearch+json; compatible-with=8",
     }
     if ES_USERNAME or ES_PASSWORD:
         kwargs["basic_auth"] = (ES_USERNAME, ES_PASSWORD)
@@ -233,7 +251,7 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
         text = data.decode("utf-8", errors="ignore")
         text2 = rewrite_image_links(text)
         rendered = markdown(text2, extensions=["fenced_code", "tables", "codehilite"])
-        html = "<div class='markdown-body'>" + rendered + "</div>" + MATHJAX_SNIPPET
+        html = "<div class='markdown-body'>" + rendered + "</div>"
     elif doc_type == "docx":
         if mammoth is None:
             raise RuntimeError("未安装 mammoth，无法预览 DOCX 文档。")
@@ -658,7 +676,11 @@ def download_link_html(key: str) -> str:
 # ==================== Gradio UI ====================
 
 def ui_app():
-    with gr.Blocks(title=SITE_TITLE, theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate")) as demo:
+    with gr.Blocks(
+        title=SITE_TITLE,
+        theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate"),
+        head=MATHJAX_HEAD,
+    ) as demo:
         gr.HTML(GLOBAL_CSS + TREE_CSS)
         gr.HTML(
             f"<div class='mkv-header'><h1>{_esc(SITE_TITLE)}</h1>"
@@ -681,7 +703,7 @@ def ui_app():
                 with gr.Tabs(selected="preview", elem_id="content-tabs") as content_tabs:
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("")
-                        html_view = gr.HTML("<em>请选择左侧文件…</em>")
+                        html_view = gr.HTML("<em>请选择左侧文件…</em>", elem_id="doc-html-view")
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本")
                     with gr.TabItem("全文搜索", id="search"):
