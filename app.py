@@ -49,6 +49,9 @@ ES_TIMEOUT = int(os.getenv("ES_TIMEOUT", "10"))
 ES_COMPAT_VERSION = os.getenv("ES_COMPAT_VERSION", "8").strip()
 if ES_COMPAT_VERSION not in {"7", "8"}:  # Elasticsearch 7.x only accepts compat 7 or 8 headers
     ES_COMPAT_VERSION = "8"
+ES_MAX_ANALYZED_OFFSET = int(os.getenv("ES_MAX_ANALYZED_OFFSET", "999999"))
+if ES_MAX_ANALYZED_OFFSET <= 0:
+    ES_MAX_ANALYZED_OFFSET = 999999
 
 ES_ENABLED = bool(ES_HOSTS)
 
@@ -758,6 +761,7 @@ def fulltext_search(query: str) -> str:
                 "post_tags": ["</mark>"],
                 "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
             },
+            params={"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET},
         )
     except NotFoundError:
         return "<em>索引尚未建立，请先同步文档</em>"
