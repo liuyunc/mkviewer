@@ -282,62 +282,127 @@ def _es_search_request(
     search_params = params or {}
     search_kwargs = {"index": search_index, "body": body}
 
-    options = getattr(es, "options", None)
-    if callable(options):
-        options_kwargs = None
-        options_client = None
-        try:
-            from inspect import Parameter, signature
-
-            sig = signature(options)
-        except (TypeError, ValueError):  # pragma: no cover - some callables lack signatures
-            sig = None
-        if sig is not None:
-            params_sig = sig.parameters
-            has_var_kw = any(p.kind == Parameter.VAR_KEYWORD for p in params_sig.values())
-            for candidate in ("query_params", "params"):
-                if candidate in params_sig:
-                    options_kwargs = {candidate: search_params}
-                    break
-            if options_kwargs is None and has_var_kw and search_params:
-                options_kwargs = {"query_params": search_params}
-        if options_kwargs is None and search_params:
-            for candidate in ("query_params", "params"):
-                try:
-                    options_client = options(**{candidate: search_params})
-                    break
-                except TypeError:
-                    options_client = None
-        else:
-            try:
-                options_client = options(**(options_kwargs or {}))
-            except TypeError:
-                options_client = None
-        if options_client is not None:
-            try:
-                if search_params:
-                    return options_client.search(params=search_params, **search_kwargs)
-                return options_client.search(**search_kwargs)
-            except TypeError as exc:
-                if search_params and "params" in str(exc):
-                    try:
-                        return options_client.search(query_params=search_params, **search_kwargs)
-                    except TypeError:
-                        pass
-                else:
-                    pass
-
-    try:
-        if search_params:
-            return es.search(params=search_params, **search_kwargs)
+    if not search_params:
         return es.search(**search_kwargs)
-    except TypeError as exc:
-        if search_params and "params" in str(exc):
-            try:
-                return es.search(query_params=search_params, **search_kwargs)
-            except TypeError:
-                pass
-        raise
+
+    attempt_errors: List[str] = []
+    last_type_error: Optional[TypeError] = None
+
+    def _record_type_error(label: str, exc: TypeError) -> None:
+        nonlocal last_type_error
+        attempt_errors.append(f"{label}: {exc}")
+        last_type_error = exc
+
+    def _try_call(label: str, func):
+        try:
+            return func()
+        except TypeError as exc:
+            _record_type_error(label, exc)
+            return None
+
+    direct_result = _try_call(
+        "es.search(**search_params)",
+        lambda: es.search(**search_kwargs, **search_params),
+    )
+    if direct_result is not None:
+        return direct_result
+
+    params_result = _try_call(
+        "es.search(params=…)",
+        lambda: es.search(**search_kwargs, params=search_params),
+    )
+    if params_result is not None:
+        return params_result
+
+    query_params_result = _try_call(
+        "es.search(query_params=…)",
+        lambda: es.search(**search_kwargs, query_params=search_params),
+    )
+    if query_params_result is not None:
+        return query_params_result
+
+    options = getattr(es, "options", None)
+    option_clients: List[Tuple[str, Elasticsearch]] = []
+    if callable(options):
+        option_with_params = _try_call(
+            "es.options(params=…)",
+            lambda: options(params=search_params),
+        )
+        if option_with_params is not None:
+            option_clients.append(("es.options(params=…)", option_with_params))
+
+        option_with_query_params = _try_call(
+            "es.options(query_params=…)",
+            lambda: options(query_params=search_params),
+        )
+        if option_with_query_params is not None:
+            option_clients.append(("es.options(query_params=…)", option_with_query_params))
+
+        option_default = _try_call("es.options()", lambda: options())
+        if option_default is not None:
+            option_clients.append(("es.options()", option_default))
+
+    for label, client in option_clients:
+        no_param_result = _try_call(
+            f"{label}.search()",
+            lambda c=client: c.search(**search_kwargs),
+        )
+        if no_param_result is not None:
+            return no_param_result
+
+        direct_option_result = _try_call(
+            f"{label}.search(**search_params)",
+            lambda c=client: c.search(**search_kwargs, **search_params),
+        )
+        if direct_option_result is not None:
+            return direct_option_result
+
+        option_params_result = _try_call(
+            f"{label}.search(params=…)",
+            lambda c=client: c.search(**search_kwargs, params=search_params),
+        )
+        if option_params_result is not None:
+            return option_params_result
+
+        option_query_params_result = _try_call(
+            f"{label}.search(query_params=…)",
+            lambda c=client: c.search(**search_kwargs, query_params=search_params),
+        )
+        if option_query_params_result is not None:
+            return option_query_params_result
+
+    transport = getattr(es, "transport", None)
+    if transport is not None:
+        def _transport_call():
+            path_builder = getattr(es, "_make_path", None)
+            path = None
+            if callable(path_builder):
+                try:
+                    path = path_builder(search_index, "_search")
+                except Exception:
+                    path = None
+            if not path:
+                idx = search_index
+                if isinstance(idx, (list, tuple)):
+                    idx = ",".join(idx)
+                path = "/_search" if not idx else f"/{idx}/_search"
+            return transport.perform_request(
+                "POST",
+                path,
+                params=search_params,
+                body=body,
+            )
+
+        transport_result = _try_call("transport.perform_request", _transport_call)
+        if transport_result is not None:
+            return transport_result
+
+    if last_type_error is not None:
+        raise TypeError(
+            f"{last_type_error} (search attempts: {'; '.join(attempt_errors)})"
+        ) from last_type_error
+
+    return es.search(**search_kwargs)
 
 # ==================== 图片链接重写 ====================
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
