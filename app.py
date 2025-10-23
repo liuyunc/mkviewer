@@ -752,7 +752,7 @@ def fulltext_search(query: str) -> str:
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
         return f"<em>搜索服务不可用：{_esc(str(exc))}</em>"
     try:
-        resp = es.search(
+        search_kwargs = dict(
             index=ES_INDEX,
             query={"multi_match": {"query": query, "fields": ["content"]}},
             size=200,
@@ -763,6 +763,17 @@ def fulltext_search(query: str) -> str:
             },
             params={"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET},
         )
+        search_params = {"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET}
+        options = getattr(es, "options", None)
+        if callable(options):
+            # Elasticsearch 8.x's typed client exposes query-string parameters as
+            # keyword arguments but still allows arbitrary values through the
+            # ``options`` helper.  Using it keeps support for custom parameters
+            # such as ``max_analyzed_offset`` while remaining compatible with
+            # older clients that expect a ``params`` mapping.
+            resp = options(query_params=search_params).search(**search_kwargs)
+        else:
+            resp = es.search(params=search_params, **search_kwargs)
     except NotFoundError:
         return "<em>索引尚未建立，请先同步文档</em>"
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
