@@ -269,20 +269,73 @@ def ensure_es_index(es: Elasticsearch) -> None:
     )
 
 
-def _es_search_request(es: Elasticsearch, body: Dict, params: Optional[Dict] = None):
-    """Execute a search request while preserving compatibility headers."""
-    transport = getattr(es, "transport", None)
-    if transport is None:  # pragma: no cover - defensive guard for unexpected clients
-        raise RuntimeError("Elasticsearch 客户端缺少底层 transport")
-    path = f"/{ES_INDEX}/_search"
-    if params:
-        query = urlencode(params, doseq=True)
-        path = f"{path}?{query}"
-    resp = transport.perform_request("POST", path, body=body)
-    payload = getattr(resp, "body", resp)
-    if isinstance(payload, (bytes, bytearray)):
-        payload = json.loads(payload.decode("utf-8", errors="ignore"))
-    return payload
+def _es_search_request(
+    es: Elasticsearch,
+    body: Dict,
+    params: Optional[Dict] = None,
+    *,
+    index: Optional[str] = None,
+):
+    """Execute a search request while preserving compatibility across client versions."""
+
+    search_index = index or ES_INDEX
+    search_params = params or {}
+    search_kwargs = {"index": search_index, "body": body}
+
+    def _search_with_params(client):
+        if not search_params:
+            return client.search(**search_kwargs)
+
+        last_exc: Optional[TypeError] = None
+        for keyword in ("params", "query_params"):
+            call_kwargs = dict(search_kwargs)
+            call_kwargs[keyword] = search_params
+            try:
+                return client.search(**call_kwargs)
+            except TypeError as exc:
+                last_exc = exc
+        if last_exc is not None:
+            raise last_exc
+        return client.search(**search_kwargs)
+
+    options = getattr(es, "options", None)
+    if callable(options):
+        options_kwargs = None
+        options_client = None
+        try:
+            from inspect import Parameter, signature
+
+            sig = signature(options)
+        except (TypeError, ValueError):  # pragma: no cover - some callables lack signatures
+            sig = None
+        if sig is not None:
+            params_sig = sig.parameters
+            has_var_kw = any(p.kind == Parameter.VAR_KEYWORD for p in params_sig.values())
+            for candidate in ("query_params", "params"):
+                if candidate in params_sig:
+                    options_kwargs = {candidate: search_params}
+                    break
+            if options_kwargs is None and has_var_kw and search_params:
+                options_kwargs = {"query_params": search_params}
+        if options_kwargs is None and search_params:
+            for candidate in ("query_params", "params"):
+                try:
+                    options_client = options(**{candidate: search_params})
+                    break
+                except TypeError:
+                    options_client = None
+        else:
+            try:
+                options_client = options(**(options_kwargs or {}))
+            except TypeError:
+                options_client = None
+        if options_client is not None:
+            try:
+                return _search_with_params(options_client)
+            except TypeError:
+                pass
+
+    return _search_with_params(es)
 
 # ==================== 图片链接重写 ====================
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
@@ -833,7 +886,8 @@ def fulltext_search(query: str) -> str:
     try:
         search_body = {
             "size": 200,
-            "query": {"multi_match": {"query": query, "fields": ["content"]}},
+            # 使用 match 查询与 Postman 中保持一致，避免 multi_match 在仅有单字段时出现兼容性问题
+            "query": {"match": {"content": {"query": query}}},
             "highlight": {
                 "pre_tags": ["<mark>"],
                 "post_tags": ["</mark>"],
