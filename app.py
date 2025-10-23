@@ -27,8 +27,13 @@ except Exception:  # pragma: no cover - optional dependency guard
 
 try:
     import textract
+    try:
+        from textract.exceptions import ShellError as TextractShellError  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency guard
+        TextractShellError = Exception
 except Exception:  # pragma: no cover - optional dependency guard
     textract = None
+    TextractShellError = Exception
 
 # ==================== 环境变量 ====================
 MINIO_ENDPOINTS = os.getenv("MINIO_ENDPOINTS", "10.20.41.24:9005,10.20.40.101:9005").split(",")
@@ -61,10 +66,10 @@ ES_ENABLED = bool(ES_HOSTS)
 # typesetter whenever the preview HTML changes.
 MATHJAX_HEAD = """
 <script>
-window.MathJax = window.MathJax || {
-    tex: {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]},
-    svg: {fontCache: 'global'}
-};
+window.MathJax = window.MathJax || {};
+window.MathJax.tex = window.MathJax.tex || {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]};
+window.MathJax.svg = window.MathJax.svg || {fontCache: 'global'};
+window.MathJax.startup = Object.assign({typeset: false}, window.MathJax.startup || {});
 </script>
 <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 <script>
@@ -430,10 +435,17 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
                 finally:
                     if os.path.exists(tmp_name):
                         os.unlink(tmp_name)
-            except Exception as exc:  # pragma: no cover - 转换错误主要依赖外部库
+            except TextractShellError as exc:  # pragma: no cover - 依赖外部命令
+                fallback = _decode_possible_text(data)
+                if fallback is None:
+                    fallback = f"无法解析为有效的 Word 文档：{exc}"
+                text = fallback
+                html = _plain_text_html(text)
+            except Exception as exc:  # pragma: no cover - 其它未知错误
                 raise RuntimeError(f"DOC 解析失败：{exc}") from exc
-            text = text_bytes.decode("utf-8", errors="ignore")
-            html = _plain_text_html(text)
+            else:
+                text = text_bytes.decode("utf-8", errors="ignore")
+                html = _plain_text_html(text)
     else:  # pragma: no cover - 理论上不会走到
         raise RuntimeError(f"未知文档类型：{doc_type}")
 
@@ -459,6 +471,33 @@ def build_tree(files: List[str], base_prefix: str = "") -> Dict:
 
 def _esc(t: str) -> str:
     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _decode_possible_text(data: bytes) -> Optional[str]:
+    """Attempt to coerce binary bytes into readable text for malformed DOC files."""
+    if not data:
+        return None
+    sample = data.strip(b"\x00")
+    if not sample:
+        return None
+    encodings = ("utf-8", "gbk", "gb2312", "latin-1")
+    for enc in encodings:
+        try:
+            text = sample.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        preview = normalized[:2000]
+        total = len(preview)
+        if not total:
+            continue
+        printable = sum(1 for ch in preview if ch.isprintable() or ch in "\n\t")
+        if printable / total < 0.6:
+            continue
+        cleaned = normalized.strip()
+        if cleaned:
+            return cleaned
+    return None
 
 
 def _file_icon(name: str) -> str:
@@ -792,62 +831,20 @@ def fulltext_search(query: str) -> str:
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
         return f"<em>搜索服务不可用：{_esc(str(exc))}</em>"
     try:
+        search_body = {
+            "size": 200,
+            "query": {"multi_match": {"query": query, "fields": ["content"]}},
+            "highlight": {
+                "pre_tags": ["<mark>"],
+                "post_tags": ["</mark>"],
+                "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
+            },
+        }
         resp = _es_search_request(
             es,
-            {
-                "size": 200,
-                "query": {"multi_match": {"query": query, "fields": ["content"]}},
-                "highlight": {
-                    "pre_tags": ["<mark>"],
-                    "post_tags": ["</mark>"],
-                    "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
-                },
-            },
+            search_body,
             params={"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET},
         )
-        search_params = {"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET}
-        options = getattr(es, "options", None)
-        if callable(options):
-            # Elasticsearch's typed client changed the keyword used for query
-            # parameters (``query_params`` vs ``params``) between releases.  We
-            # inspect the bound ``options`` signature so we only forward
-            # supported keywords, falling back to the legacy ``params`` map on
-            # clients that lack ``options`` entirely.
-            options_kwargs = None
-            options_client = None
-            try:
-                from inspect import Parameter, signature
-
-                sig = signature(options)
-            except (TypeError, ValueError):  # pragma: no cover - some callables lack signatures
-                sig = None
-            if sig is not None:
-                params = sig.parameters
-                has_var_kw = any(p.kind == Parameter.VAR_KEYWORD for p in params.values())
-                for candidate in ("query_params", "params"):
-                    if candidate in params:
-                        options_kwargs = {candidate: search_params}
-                        break
-                if options_kwargs is None and has_var_kw:
-                    options_kwargs = {"query_params": search_params}
-            if options_kwargs is None:
-                for candidate in ("query_params", "params"):
-                    try:
-                        options_client = options(**{candidate: search_params})
-                        break
-                    except TypeError:
-                        options_client = None
-            else:
-                try:
-                    options_client = options(**options_kwargs)
-                except TypeError:
-                    options_client = None
-            if options_client is not None:
-                resp = options_client.search(**search_kwargs)
-            else:
-                resp = es.search(params=search_params, **search_kwargs)
-        else:
-            resp = es.search(params=search_params, **search_kwargs)
     except NotFoundError:
         return "<em>索引尚未建立，请先同步文档</em>"
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
