@@ -179,35 +179,36 @@ def _compat_transport_class(compat_header: str):
             hdrs["content-type"] = compat_header
 
             call_kwargs = dict(kwargs)
-            if param_key:
-                call_kwargs[param_key] = params
-            elif params is not None:
-                if has_var_kw:
+            request_path = path
+
+            if params is not None:
+                if param_key:
+                    call_kwargs[param_key] = params
+                elif has_var_kw:
                     call_kwargs["params"] = params
-                else:  # pragma: no cover - defensive guard for unexpected signatures
-                    raise TypeError("Underlying transport does not accept query parameters")
+                elif params:  # fall back to encoding params into the path
+                    query = urlencode(params, doseq=True)
+                    sep = "&" if "?" in request_path else "?"
+                    request_path = f"{request_path}{sep}{query}"
 
-            if "headers" in accepts:
+            if "headers" in accepts or has_var_kw:
                 merged = dict(call_kwargs.get("headers", {}))
                 merged.update(hdrs)
                 call_kwargs["headers"] = merged
-            elif has_var_kw:
-                merged = dict(call_kwargs.get("headers", {}))
-                merged.update(hdrs)
-                call_kwargs["headers"] = merged
-            else:  # pragma: no cover - defensive guard for unexpected signatures
-                if hdrs:
-                    raise TypeError("Underlying transport does not accept 'headers'")
+            elif hdrs and hdrs != call_kwargs.get("headers"):
+                # If the transport truly lacks a headers argument we cannot
+                # attach them dynamically, so raise a clear error.
+                raise TypeError("Underlying transport does not accept 'headers'")
 
-            if body_key:
-                call_kwargs[body_key] = body
-            elif body is not None:
-                if has_var_kw:
+            if body is not None:
+                if body_key:
+                    call_kwargs[body_key] = body
+                elif has_var_kw:
                     call_kwargs["body"] = body
-                else:  # pragma: no cover - defensive guard for unexpected signatures
+                else:
                     raise TypeError("Underlying transport does not accept request bodies")
 
-            return super().perform_request(method, path, **call_kwargs)
+            return super().perform_request(method, request_path, **call_kwargs)
 
     return _CompatTransport
 
@@ -267,12 +268,13 @@ def _es_search_request(es: Elasticsearch, body: Dict, params: Optional[Dict] = N
     transport = getattr(es, "transport", None)
     if transport is None:  # pragma: no cover - defensive guard for unexpected clients
         raise RuntimeError("Elasticsearch 客户端缺少底层 transport")
-    return transport.perform_request(
+    resp = transport.perform_request(
         "POST",
         f"/{ES_INDEX}/_search",
         params=params,
         body=body,
     )
+    return getattr(resp, "body", resp)
 
 # ==================== 图片链接重写 ====================
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
