@@ -72,14 +72,6 @@ window.MathJax = window.MathJax || {
             requestAnimationFrame(ensureObserver);
             return;
         }
-        let observer;
-        const startWatching = () => {
-            if (observer) {
-                observer.disconnect();
-            }
-            observer = new MutationObserver(() => trigger());
-            observer.observe(target, {childList: true, subtree: true});
-        };
         const trigger = () => {
             if (window.MathJax && window.MathJax.typesetPromise) {
                 if (observer) {
@@ -89,6 +81,25 @@ window.MathJax = window.MathJax || {
                     startWatching();
                 });
             }
+        };
+        let observer;
+        let scheduled = false;
+        const schedule = () => {
+            if (scheduled) {
+                return;
+            }
+            scheduled = true;
+            requestAnimationFrame(() => {
+                scheduled = false;
+                trigger();
+            });
+        };
+        const startWatching = () => {
+            if (observer) {
+                observer.disconnect();
+            }
+            observer = new MutationObserver(() => schedule());
+            observer.observe(target, {childList: true, subtree: true});
         };
         window._mkviewerTypeset = trigger;
         startWatching();
@@ -135,14 +146,21 @@ def _compat_transport_class(compat_header: str):
         return None
 
     class _CompatTransport(Transport):
-        def perform_request(self, method, path, params=None, headers=None, body=None):
+        def perform_request(self, method, path, params=None, headers=None, body=None, **kwargs):
             hdrs = dict(headers or {})
             lower = {k.lower() for k in hdrs}
             if "accept" not in lower:
                 hdrs["accept"] = compat_header
             if "content-type" not in lower:
                 hdrs["content-type"] = compat_header
-            return super().perform_request(method, path, params=params, headers=hdrs, body=body)
+            return super().perform_request(
+                method,
+                path,
+                params=params,
+                headers=hdrs,
+                body=body,
+                **kwargs,
+            )
 
     return _CompatTransport
 
