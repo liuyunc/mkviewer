@@ -938,12 +938,13 @@ body {
     font-size:.9rem;
 }
 .sidebar-col .status-bar em { color:var(--brand-muted); }
-.sidebar-card {
+.sidebar-sticky {
     position:sticky;
-    top:60px;
+    top:32px;
     display:flex;
     flex-direction:column;
-    gap:12px;
+    gap:14px;
+    align-self:flex-start;
 }
 .sidebar-tree {
     padding:18px 20px;
@@ -951,7 +952,7 @@ body {
     border-radius:var(--brand-radius);
     border:1px solid var(--brand-border);
     box-shadow:var(--brand-shadow);
-    max-height:72vh;
+    max-height:60vh;
     overflow:auto;
 }
 .sidebar-tree::-webkit-scrollbar { width:8px; }
@@ -1073,18 +1074,27 @@ body {
 }
 .download-panel {
     margin-bottom:12px;
-    font-size:.95rem;
-    color:var(--brand-muted);
 }
-.download-panel a {
-    color:var(--brand-primary);
+.download-actions {
+    display:flex;
+    justify-content:flex-start;
+}
+.download-button {
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    padding:10px 18px;
+    border-radius:14px;
+    background:var(--brand-primary);
+    color:#ffffff !important;
     font-weight:600;
     text-decoration:none;
+    box-shadow:var(--brand-shadow);
+    transition:transform .15s ease, box-shadow .15s ease;
 }
-.download-panel code {
-    display:inline-block;
-    margin-top:4px;
-    font-size:.88rem;
+.download-button:hover {
+    transform:translateY(-1px);
+    box-shadow:0 10px 20px rgba(20,88,214,0.2);
 }
 .doc-preview,
 .plaintext-view textarea {
@@ -1178,7 +1188,7 @@ body {
         gap:12px;
         align-items:flex-start;
     }
-    .sidebar-card { position:static; }
+    .sidebar-sticky { position:static; }
     .sidebar-tree { max-height:unset; }
     .toc-col { position:static; }
     .toc-card { max-height:unset; }
@@ -1288,7 +1298,11 @@ def download_link_html(key: str) -> str:
     c, ep = connect()
     url = c.presigned_get_object(DOC_BUCKET, key, expires=timedelta(hours=6))
     esc = _esc(url)
-    return f"<div style='margin:8px 0;'>🔗 <a href='{esc}' target='_blank' rel='noopener'>下载当前文件（有效 6 小时）</a><br><small>或复制：<code>{esc}</code></small></div>"
+    return (
+        "<div class='download-actions'>"
+        f"<a class='download-button' href='{esc}' target='_blank' rel='noopener'>下载当前文件（有效 6 小时）</a>"
+        "</div>"
+    )
 
 # ==================== Gradio UI ====================
 
@@ -1298,14 +1312,7 @@ def _hero_html(doc_total: Optional[int] = None) -> str:
         total_span = "<span>文档总数统计中…</span>"
     else:
         total_span = f"<span>文档总数：<strong>{doc_total}</strong></span>"
-    endpoints = ", ".join([e.strip() for e in MINIO_ENDPOINTS if e.strip()])
-    endpoint_text = _esc(endpoints) if endpoints else "-"
-    meta_items = [
-        total_span,
-        f"<span>Endpoint：{endpoint_text}</span>",
-        f"<span>文档桶：{_esc(DOC_BUCKET)}</span>",
-        f"<span>前缀：{_esc(DOC_PREFIX or '/')}</span>",
-    ]
+    meta_items = [total_span]
     feedback_link = (
         "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' "
         "target='_blank' rel='noopener'>文档问题反馈</a>"
@@ -1356,24 +1363,24 @@ def ui_app():
         hero_html = gr.HTML(_hero_html())
         with gr.Row(elem_classes=["gr-row"]):
             with gr.Column(scale=1, min_width=340, elem_classes=["sidebar-col"]):
-                gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
-                with gr.Row(elem_classes=["controls"]):
-                    btn_refresh = gr.Button("刷新树", variant="secondary")
-                    btn_expand = gr.Button("展开全部")
-                    btn_collapse = gr.Button("折叠全部")
-                    btn_clear = gr.Button("清空缓存")
-                    btn_reindex = gr.Button("重建索引", variant="secondary")
-                status_bar = gr.HTML("", elem_classes=["status-bar"])
-                with gr.Column(elem_classes=["sidebar-card"]):
+                with gr.Column(elem_classes=["sidebar-sticky"]):
+                    gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
+                    with gr.Row(elem_classes=["controls"]):
+                        btn_refresh = gr.Button("刷新树", variant="secondary")
+                        btn_expand = gr.Button("展开全部")
+                        btn_collapse = gr.Button("折叠全部")
+                        btn_clear = gr.Button("清空缓存")
+                        btn_reindex = gr.Button("重建索引", variant="secondary")
+                    status_bar = gr.HTML("", elem_classes=["status-bar"])
                     tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
-                gr.HTML("<div class='search-title'>全文搜索</div>", elem_classes=["search-title"])
-                with gr.Column(elem_classes=["search-stack"]):
-                    q = gr.Textbox(
-                        show_label=False,
-                        placeholder="输入关键字… 然后回车或点搜索",
-                        elem_classes=["search-input"],
-                    )
-                    btn_search = gr.Button("搜索", elem_classes=["search-button"])
+                    gr.HTML("<div class='search-title'>全文搜索</div>", elem_classes=["search-title"])
+                    with gr.Column(elem_classes=["search-stack"]):
+                        q = gr.Textbox(
+                            show_label=False,
+                            placeholder="输入关键字… 然后回车或点搜索",
+                            elem_classes=["search-input"],
+                        )
+                        btn_search = gr.Button("搜索", elem_classes=["search-button"])
             with gr.Column(scale=5, elem_classes=["content-col"]):
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
                     with gr.TabItem("目录", id="toc"):
