@@ -40,9 +40,15 @@ ES_USERNAME = os.getenv("ES_USERNAME", "")
 ES_PASSWORD = os.getenv("ES_PASSWORD", "")
 ES_VERIFY_CERTS = os.getenv("ES_VERIFY_CERTS", "true").strip().lower() == "true"
 ES_TIMEOUT = int(os.getenv("ES_TIMEOUT", "10"))
+ES_COMPAT_VERSION = os.getenv("ES_COMPAT_VERSION", "8").strip()
+if ES_COMPAT_VERSION not in {"7", "8"}:  # Elasticsearch 7.x only accepts compat 7 or 8 headers
+    ES_COMPAT_VERSION = "8"
 
 ES_ENABLED = bool(ES_HOSTS)
 
+# Inject MathJax once at the document head so the preview pane can render LaTeX
+# fragments coming from Markdown/Word conversions.  A MutationObserver re-runs the
+# typesetter whenever the preview HTML changes.
 MATHJAX_HEAD = """
 <script>
 window.MathJax = window.MathJax || {
@@ -112,9 +118,14 @@ def es_connect() -> Elasticsearch:
         "verify_certs": ES_VERIFY_CERTS,
         "request_timeout": ES_TIMEOUT,
     }
+    # The Elasticsearch server rejects requests whose Accept/Content-Type advertise
+    # a future major version (e.g. "compatible-with=9") with HTTP 400.  Explicitly
+    # pinning the compatibility headers avoids the "media_type_header_exception"
+    # that surfaced when refreshing the tree view.
+    compat_header = f"application/vnd.elasticsearch+json; compatible-with={ES_COMPAT_VERSION}"
     kwargs["headers"] = {
-        "Accept": "application/vnd.elasticsearch+json; compatible-with=8",
-        "Content-Type": "application/vnd.elasticsearch+json; compatible-with=8",
+        "Accept": compat_header,
+        "Content-Type": compat_header,
     }
     if ES_USERNAME or ES_PASSWORD:
         kwargs["basic_auth"] = (ES_USERNAME, ES_PASSWORD)
