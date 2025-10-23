@@ -719,21 +719,35 @@ def sync_elasticsearch(docs: List[Dict[str, str]], force: bool = False) -> str:
 GLOBAL_CSS = """
 <style>
 :root {
-    --brand-primary:#1f6feb;
-    --brand-primary-light:#4c8dff;
-    --brand-bg:#f4f7ff;
+    --brand-primary:#1458d6;
+    --brand-primary-soft:#3c7bff;
+    --brand-primary-ghost:rgba(20,88,214,0.08);
+    --brand-bg:#f1f5fb;
     --brand-card:#ffffff;
-    --brand-text:#1f2933;
-    --brand-muted:#5f6c7d;
-    --brand-border:rgba(31,111,235,0.18);
-    --brand-shadow:0 16px 40px rgba(31,111,235,0.12);
+    --brand-text:#1f2937;
+    --brand-muted:#64748b;
+    --brand-border:rgba(20,88,214,0.16);
+    --brand-shadow:0 18px 42px rgba(20,88,214,0.15);
+    --brand-radius:22px;
 }
 body, body * {
     font-family:"PingFang SC","Microsoft YaHei","Source Han Sans SC","Helvetica Neue",Arial,sans-serif !important;
     color:var(--brand-text);
 }
-body { background:var(--brand-bg); }
-.gradio-container { background:transparent !important; }
+body {
+    background:linear-gradient(160deg,#eef3fc 0%,#f8fbff 55%,#ffffff 100%);
+}
+.gradio-container {
+    background:transparent !important;
+    max-width:1320px;
+    margin:0 auto;
+    padding:12px 32px 48px;
+}
+.gradio-container .block.padded {
+    background:transparent;
+    border:none;
+    box-shadow:none;
+}
 .gradio-container .prose h1,
 .gradio-container .prose h2,
 .gradio-container .prose h3 {
@@ -741,162 +755,330 @@ body { background:var(--brand-bg); }
     font-weight:600;
 }
 .gradio-container .prose a { color:var(--brand-primary); }
-.gradio-container .prose code { font-family:"Fira Code","JetBrains Mono","SFMono-Regular",Consolas,monospace; }
+.gradio-container .prose code {
+    font-family:"Fira Code","JetBrains Mono","SFMono-Regular",Consolas,monospace;
+    background:var(--brand-primary-ghost);
+    padding:2px 6px;
+    border-radius:6px;
+}
 .gradio-container button {
     border-radius:999px !important;
     font-weight:600;
+    transition:transform .2s ease,box-shadow .2s ease;
 }
 .gradio-container button.primary,
 .gradio-container button[aria-label="搜索"],
 .gradio-container button[aria-label="刷新树"] {
-    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-light));
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
     border:none;
+    color:#fff;
 }
 .gradio-container button.primary:hover,
 .gradio-container button[aria-label="搜索"]:hover,
 .gradio-container button[aria-label="刷新树"]:hover {
-    filter:brightness(1.05);
+    transform:translateY(-1px);
+    box-shadow:0 12px 26px rgba(20,88,214,0.25);
 }
-.gradio-container .block.padded {
+.mkv-topbar {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
     background:var(--brand-card);
-    border-radius:18px;
+    border-radius:var(--brand-radius);
     border:1px solid var(--brand-border);
+    padding:18px 26px;
     box-shadow:var(--brand-shadow);
+    position:sticky;
+    top:12px;
+    z-index:10;
 }
-.mkv-header {
-    padding:18px 22px;
-    margin-bottom:12px;
-    background:var(--brand-card);
-    border-radius:20px;
-    border:1px solid var(--brand-border);
-    box-shadow:var(--brand-shadow);
+.mkv-brand {
+    display:flex;
+    align-items:center;
+    gap:14px;
 }
-.mkv-header h1 {
-    font-size:1.6rem;
-    margin-bottom:.2rem;
+.mkv-logo {
+    width:46px;
+    height:46px;
+    border-radius:14px;
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:#fff;
+    font-weight:700;
+    font-size:1.2rem;
+    letter-spacing:.02em;
+    box-shadow:0 12px 22px rgba(20,88,214,0.28);
 }
-.mkv-header p {
-    margin:0;
+.mkv-brand-title {
+    font-size:1.32rem;
+    font-weight:700;
+}
+.mkv-brand-subtitle {
+    margin-top:2px;
+    font-size:.92rem;
     color:var(--brand-muted);
 }
-.controls {
+.mkv-links {
+    display:flex;
+    align-items:center;
+    gap:16px;
+    font-size:.95rem;
+}
+.mkv-link {
+    color:var(--brand-primary);
+    font-weight:600;
+    text-decoration:none;
+    padding:8px 16px;
+    border-radius:999px;
+    background:var(--brand-primary-ghost);
+    transition:all .2s ease;
+}
+.mkv-link:hover {
+    color:#fff;
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
+    box-shadow:0 12px 26px rgba(20,88,214,0.2);
+}
+.mkv-hero {
+    margin:22px 0 18px;
+    padding:28px 32px;
+    border-radius:var(--brand-radius);
+    background:var(--brand-card);
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+}
+.mkv-hero h1 {
+    font-size:1.8rem;
+    margin-bottom:10px;
+}
+.mkv-hero p {
+    margin:0;
+    color:var(--brand-muted);
+    line-height:1.6;
+}
+.mkv-meta {
+    display:flex;
+    flex-wrap:wrap;
+    gap:14px;
+    margin-top:14px;
+    font-size:.95rem;
+}
+.mkv-meta span {
+    padding:6px 12px;
+    border-radius:999px;
+    background:var(--brand-primary-ghost);
+    color:var(--brand-primary);
+}
+.gr-row {
+    gap:24px !important;
+}
+.sidebar-col .controls {
     display:flex;
     gap:10px;
     flex-wrap:wrap;
+    margin-bottom:12px;
 }
-.controls .gr-button {
-    min-width:96px;
-}
-.status-bar {
-    margin:8px 0 6px;
+.sidebar-heading h3 {
+    margin-bottom:12px !important;
     color:var(--brand-muted);
-    font-size:.92rem;
+    letter-spacing:.02em;
 }
-.status-bar em {
+.sidebar-col .gr-button { min-width:104px; }
+.sidebar-col .status-bar {
+    margin:4px 0 8px;
     color:var(--brand-muted);
+    font-size:.9rem;
 }
-.sidebar {
+.sidebar-col .status-bar em { color:var(--brand-muted); }
+.sidebar-card {
     position:sticky;
-    top:8px;
-    max-height:82vh;
-    overflow:auto;
-    padding:14px 16px;
-    background:linear-gradient(180deg,rgba(76,141,255,0.12),rgba(255,255,255,0.9));
+    top:126px;
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+}
+.sidebar-tree {
+    padding:18px 20px;
+    background:var(--brand-card);
+    border-radius:var(--brand-radius);
     border:1px solid var(--brand-border);
-    border-radius:18px;
     box-shadow:var(--brand-shadow);
+    max-height:72vh;
+    overflow:auto;
 }
-.sidebar::-webkit-scrollbar {
-    width:8px;
-}
-.sidebar::-webkit-scrollbar-thumb {
-    background:rgba(31,111,235,0.28);
+.sidebar-tree::-webkit-scrollbar { width:8px; }
+.sidebar-tree::-webkit-scrollbar-thumb {
+    background:rgba(20,88,214,0.25);
     border-radius:10px;
 }
-.sidebar details { margin-left:.4rem; }
-.sidebar summary {
+.sidebar-tree details { margin-left:.6rem; }
+.sidebar-tree summary {
     cursor:pointer;
     padding:4px 8px;
     border-radius:10px;
     color:var(--brand-muted);
+    transition:background .2s ease,color .2s ease;
 }
-.sidebar summary:hover {
-    background:rgba(31,111,235,0.12);
+.sidebar-tree summary:hover {
+    background:rgba(20,88,214,0.12);
     color:var(--brand-primary);
 }
-.file {
+.sidebar-tree .file {
     padding:4px 8px;
-    border-radius:8px;
+    border-radius:9px;
     color:var(--brand-text);
+    transition:background .2s ease;
 }
-.file:hover {
-    background:rgba(31,111,235,0.12);
+.sidebar-tree .file:hover {
+    background:rgba(20,88,214,0.12);
 }
-.file a {
+.sidebar-tree .file a {
     color:var(--brand-primary);
     text-decoration:none;
     font-weight:500;
 }
-.file a:hover {
-    text-decoration:underline;
+.sidebar-tree .file a:hover { text-decoration:underline; }
+.search-input textarea,
+.search-input input {
+    border-radius:16px !important;
+    border:1px solid var(--brand-border) !important;
+    background:#f8fbff !important;
+    padding:10px 16px !important;
+    font-size:.95rem !important;
+    box-shadow:none !important;
+}
+.search-input label { font-weight:600; }
+.search-button button {
+    width:100%;
+    border-radius:16px !important;
+    padding:10px 0 !important;
+}
+.content-col {
+    display:flex;
+    flex-direction:column;
+    gap:18px;
+}
+.content-card {
+    background:var(--brand-card);
+    border-radius:var(--brand-radius);
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+    padding:18px 24px;
+}
+.download-panel {
+    margin-bottom:12px;
+    font-size:.95rem;
+    color:var(--brand-muted);
+}
+.download-panel a {
+    color:var(--brand-primary);
+    font-weight:600;
+    text-decoration:none;
+}
+.download-panel code {
+    display:inline-block;
+    margin-top:4px;
+    font-size:.88rem;
+}
+.doc-preview,
+.plaintext-view textarea {
+    width:100%;
+    border-radius:18px !important;
+    border:1px solid var(--brand-border) !important;
+    background:#ffffff !important;
+    box-shadow:var(--brand-shadow);
+}
+.doc-preview {
+    padding:0;
+    margin:0;
+    line-height:1.72;
+    font-size:1rem;
+}
+.doc-preview #doc-html-view {
+    padding:20px 22px;
+}
+.plaintext-view textarea {
+    min-height:420px !important;
+    font-family:"Fira Code","JetBrains Mono","SFMono-Regular",Consolas,monospace !important;
+    font-size:.92rem !important;
+    color:#0f172a !important;
+}
+.gradio-container .tab-nav button {
+    font-weight:600;
+    padding:10px 18px;
+    border-radius:999px;
+}
+.gradio-container .tab-nav button[aria-selected="true"] {
+    color:var(--brand-primary);
+    background:var(--brand-primary-ghost);
+}
+.search-panel {
+    padding:18px 22px;
+    background:var(--brand-card);
+    border-radius:var(--brand-radius);
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+}
+.search-panel mark {
+    background:rgba(20,88,214,0.18);
+    color:var(--brand-text);
+    border-radius:4px;
+    padding:0 3px;
+}
+.search-snippet {
+    margin-left:1.2rem;
+    color:#334155;
+    font-size:.94rem;
+}
+.search-snippet mark {
+    background:rgba(20,88,214,0.18);
+    color:var(--brand-text);
+    border-radius:4px;
+    padding:0 3px;
 }
 .badge {
     font-size:.82rem;
     color:var(--brand-muted);
 }
-.search-panel {
-    padding:12px 16px;
-    background:var(--brand-card);
-    border-radius:16px;
-    border:1px solid var(--brand-border);
-    box-shadow:var(--brand-shadow);
-}
-.search-panel mark {
-    background:rgba(31,111,235,0.2);
-    color:var(--brand-text);
-    border-radius:4px;
-    padding:0 2px;
-}
-.search-snippet {
-    margin-left:1.2rem;
-    color:#374151;
-    font-size:.92rem;
-}
-.search-snippet mark {
-    background:rgba(31,111,235,0.2);
-    color:var(--brand-text);
-    border-radius:4px;
-    padding:0 2px;
-}
-.gradio-container .tab-nav button {
-    font-weight:600;
-}
-.gradio-container .tab-nav button[aria-selected="true"] {
-    color:var(--brand-primary);
-}
-.doc-preview,
-.docx-preview {
-    margin-top:.6rem;
-    padding:14px 18px;
-    background:var(--brand-card);
-    border-radius:18px;
-    border:1px solid var(--brand-border);
-    box-shadow:var(--brand-shadow);
-    line-height:1.62;
-}
-.doc-preview {
-    white-space:pre-wrap;
-}
-.docx-preview p {
-    margin:0 0 .8em 0;
-}
 .doc-error {
     margin-top:.6rem;
-    padding:12px 16px;
-    border-radius:12px;
+    padding:14px 18px;
+    border-radius:14px;
     background:rgba(239,68,68,0.12);
     color:#b91c1c;
-    border:1px solid rgba(239,68,68,0.35);
+    border:1px solid rgba(239,68,68,0.25);
+}
+.markdown-body table {
+    border-collapse:collapse;
+    width:100%;
+}
+.markdown-body th,
+.markdown-body td {
+    border:1px solid rgba(20,88,214,0.18);
+    padding:6px 10px;
+}
+.markdown-body blockquote {
+    border-left:4px solid rgba(20,88,214,0.25);
+    margin-left:0;
+    padding-left:12px;
+    color:var(--brand-muted);
+}
+@media (max-width:1100px) {
+    .gradio-container {
+        padding:12px 18px 40px;
+    }
+    .mkv-topbar {
+        flex-direction:column;
+        gap:12px;
+        align-items:flex-start;
+    }
+    .sidebar-card { position:static; }
+    .sidebar-tree { max-height:unset; }
+}
+@media (max-width:860px) {
+    .gradio-container { padding:10px 12px 32px; }
+    .gr-row { flex-direction:column; }
 }
 </style>
 """
@@ -909,11 +1091,11 @@ TREE_CSS = """
 }
 .markdown-body th,
 .markdown-body td {
-    border:1px solid rgba(31,111,235,0.12);
+    border:1px solid rgba(20,88,214,0.18);
     padding:6px 10px;
 }
 .markdown-body blockquote {
-    border-left:4px solid rgba(31,111,235,0.25);
+    border-left:4px solid rgba(20,88,214,0.25);
     margin-left:0;
     padding-left:12px;
     color:var(--brand-muted);
@@ -1011,12 +1193,33 @@ def ui_app():
     ) as demo:
         gr.HTML(GLOBAL_CSS + TREE_CSS)
         gr.HTML(
-            f"<div class='mkv-header'><h1>{_esc(SITE_TITLE)}</h1>"
-            f"<p>Endpoint：<strong>{_esc(', '.join(MINIO_ENDPOINTS))}</strong> · 文档桶：<strong>{_esc(DOC_BUCKET)}</strong> · 前缀：<strong>{_esc(DOC_PREFIX or '/')}</strong></p></div>"
+            f"""
+            <header class='mkv-topbar'>
+                <div class='mkv-brand'>
+                    <span class='mkv-logo'>MK</span>
+                    <div>
+                        <div class='mkv-brand-title'>{_esc(SITE_TITLE)}</div>
+                        <div class='mkv-brand-subtitle'>MinIO 文档知识库</div>
+                    </div>
+                </div>
+                <nav class='mkv-links'>
+                    <a class='mkv-link' href='http://10.20.41.24:9001/' target='_blank' rel='noopener'>文档问题反馈</a>
+                </nav>
+            </header>
+            <section class='mkv-hero'>
+                <h1>{_esc(SITE_TITLE)}</h1>
+                <p>在这里浏览、检索和预览来自 MinIO 的知识文档，快速定位你需要的内容。</p>
+                <div class='mkv-meta'>
+                    <span>Endpoint：{_esc(', '.join(MINIO_ENDPOINTS))}</span>
+                    <span>文档桶：{_esc(DOC_BUCKET)}</span>
+                    <span>前缀：{_esc(DOC_PREFIX or '/')}</span>
+                </div>
+            </section>
+            """
         )
-        with gr.Row():
-            with gr.Column(scale=1, min_width=340):
-                gr.Markdown("### 📁 文档目录")
+        with gr.Row(elem_classes=["gr-row"]):
+            with gr.Column(scale=1, min_width=340, elem_classes=["sidebar-col"]):
+                gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
                 with gr.Row(elem_classes=["controls"]):
                     btn_refresh = gr.Button("刷新树", variant="secondary")
                     btn_expand = gr.Button("展开全部")
@@ -1024,16 +1227,17 @@ def ui_app():
                     btn_clear = gr.Button("清空缓存")
                     btn_reindex = gr.Button("重建索引", variant="secondary")
                 status_bar = gr.HTML("", elem_classes=["status-bar"])
-                q = gr.Textbox(label="全文搜索", placeholder="输入关键字… 然后回车或点搜索")
-                btn_search = gr.Button("搜索")
-                tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar"])
-            with gr.Column(scale=4):
-                with gr.Tabs(selected="preview", elem_id="content-tabs") as content_tabs:
+                q = gr.Textbox(label="全文搜索", placeholder="输入关键字… 然后回车或点搜索", elem_classes=["search-input"])
+                btn_search = gr.Button("搜索", elem_classes=["search-button"])
+                with gr.Column(elem_classes=["sidebar-card"]):
+                    tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
+            with gr.Column(scale=4, elem_classes=["content-col"]):
+                with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
                     with gr.TabItem("预览", id="preview"):
-                        dl_html = gr.HTML("")
-                        html_view = gr.HTML("<em>请选择左侧文件…</em>", elem_id="doc-html-view")
+                        dl_html = gr.HTML("", elem_classes=["download-panel"])
+                        html_view = gr.HTML("<em>请选择左侧文件…</em>", elem_id="doc-html-view", elem_classes=["doc-preview"])
                     with gr.TabItem("文本内容", id="source"):
-                        md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本")
+                        md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
                     with gr.TabItem("全文搜索", id="search"):
                         search_out = gr.HTML("<em>在左侧输入关键词后点击“搜索”（由 Elasticsearch 提供支持）</em>", elem_classes=["search-panel"])
 
