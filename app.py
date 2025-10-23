@@ -787,6 +787,49 @@ def fulltext_search(query: str) -> str:
             },
             params={"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET},
         )
+        search_params = {"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET}
+        options = getattr(es, "options", None)
+        if callable(options):
+            # Elasticsearch's typed client changed the keyword used for query
+            # parameters (``query_params`` vs ``params``) between releases.  We
+            # inspect the bound ``options`` signature so we only forward
+            # supported keywords, falling back to the legacy ``params`` map on
+            # clients that lack ``options`` entirely.
+            options_kwargs = None
+            options_client = None
+            try:
+                from inspect import Parameter, signature
+
+                sig = signature(options)
+            except (TypeError, ValueError):  # pragma: no cover - some callables lack signatures
+                sig = None
+            if sig is not None:
+                params = sig.parameters
+                has_var_kw = any(p.kind == Parameter.VAR_KEYWORD for p in params.values())
+                for candidate in ("query_params", "params"):
+                    if candidate in params:
+                        options_kwargs = {candidate: search_params}
+                        break
+                if options_kwargs is None and has_var_kw:
+                    options_kwargs = {"query_params": search_params}
+            if options_kwargs is None:
+                for candidate in ("query_params", "params"):
+                    try:
+                        options_client = options(**{candidate: search_params})
+                        break
+                    except TypeError:
+                        options_client = None
+            else:
+                try:
+                    options_client = options(**options_kwargs)
+                except TypeError:
+                    options_client = None
+            if options_client is not None:
+                resp = options_client.search(**search_kwargs)
+            else:
+                resp = es.search(params=search_params, **search_kwargs)
+        else:
+            resp = es.search(params=search_params, **search_kwargs)
     except NotFoundError:
         return "<em>索引尚未建立，请先同步文档</em>"
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
