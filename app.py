@@ -3,6 +3,7 @@ import os
 import re
 import tempfile
 from collections import OrderedDict
+from functools import lru_cache
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
@@ -12,6 +13,11 @@ from markdown import markdown
 from minio import Minio
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import NotFoundError
+
+try:
+    from elastic_transport import Transport
+except Exception:  # pragma: no cover - optional dependency guard
+    Transport = None
 
 try:
     import mammoth
@@ -66,13 +72,26 @@ window.MathJax = window.MathJax || {
             requestAnimationFrame(ensureObserver);
             return;
         }
+        let observer;
+        const startWatching = () => {
+            if (observer) {
+                observer.disconnect();
+            }
+            observer = new MutationObserver(() => trigger());
+            observer.observe(target, {childList: true, subtree: true});
+        };
         const trigger = () => {
             if (window.MathJax && window.MathJax.typesetPromise) {
-                window.MathJax.typesetPromise([target]).catch(() => {});
+                if (observer) {
+                    observer.disconnect();
+                }
+                window.MathJax.typesetPromise([target]).catch(() => {}).finally(() => {
+                    startWatching();
+                });
             }
         };
-        const observer = new MutationObserver(() => trigger());
-        observer.observe(target, {childList: true, subtree: true});
+        window._mkviewerTypeset = trigger;
+        startWatching();
         trigger();
     };
     if (document.readyState === 'loading') {
@@ -83,6 +102,8 @@ window.MathJax = window.MathJax || {
 })();
 </script>
 """
+
+MATHJAX_TRIGGER_SNIPPET = "<script>window._mkviewerTypeset && window._mkviewerTypeset();</script>"
 
 # ==================== MinIO 连接 ====================
 _client = None
@@ -107,6 +128,25 @@ def connect() -> Tuple[Minio, str]:
 _es_client: Optional[Elasticsearch] = None
 
 
+@lru_cache(maxsize=2)
+def _compat_transport_class(compat_header: str):
+    """Return a Transport subclass that enforces compatibility headers."""
+    if Transport is None:  # pragma: no cover - optional dependency guard
+        return None
+
+    class _CompatTransport(Transport):
+        def perform_request(self, method, path, params=None, headers=None, body=None):
+            hdrs = dict(headers or {})
+            lower = {k.lower() for k in hdrs}
+            if "accept" not in lower:
+                hdrs["accept"] = compat_header
+            if "content-type" not in lower:
+                hdrs["content-type"] = compat_header
+            return super().perform_request(method, path, params=params, headers=hdrs, body=body)
+
+    return _CompatTransport
+
+
 def es_connect() -> Elasticsearch:
     if not ES_ENABLED:
         raise RuntimeError("未配置 Elasticsearch 主机")
@@ -123,6 +163,12 @@ def es_connect() -> Elasticsearch:
     # pinning the compatibility headers avoids the "media_type_header_exception"
     # that surfaced when refreshing the tree view.
     compat_header = f"application/vnd.elasticsearch+json; compatible-with={ES_COMPAT_VERSION}"
+    # Some helper APIs overwrite per-request headers, so wrap the transport to
+    # guarantee that every call carries the compatibility header instead of the
+    # client default (which advertised version 9 and triggered HTTP 400).
+    compat_transport = _compat_transport_class(compat_header)
+    if compat_transport is not None:
+        kwargs["transport_class"] = compat_transport
     kwargs["headers"] = {
         "Accept": compat_header,
         "Content-Type": compat_header,
@@ -293,8 +339,9 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     else:  # pragma: no cover - 理论上不会走到
         raise RuntimeError(f"未知文档类型：{doc_type}")
 
-    DOC_CACHE.set(key, (etag, doc_type, text, html))
-    return etag, doc_type, text, html
+    html_with_mathjax = html + MATHJAX_TRIGGER_SNIPPET
+    DOC_CACHE.set(key, (etag, doc_type, text, html_with_mathjax))
+    return etag, doc_type, text, html_with_mathjax
 
 # ==================== 目录树 ====================
 
