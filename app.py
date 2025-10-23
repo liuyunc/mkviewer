@@ -997,8 +997,10 @@ body {
 .search-row .search-button {
     flex:0;
 }
-.search-row .feedback-link {
+.search-row .feedback-link-col {
     flex:0;
+    display:flex;
+    justify-content:flex-end;
 }
 .search-button button {
     width:100%;
@@ -1360,11 +1362,11 @@ def ui_app():
                         scale=7,
                     )
                     btn_search = gr.Button("搜索", elem_classes=["search-button"], scale=2)
-                    feedback_link = gr.HTML(
-                        "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' target='_blank' rel='noopener'>文档问题反馈</a>",
-                        elem_classes=["feedback-link"],
-                        scale=2,
-                    )
+                    with gr.Column(scale=2, min_width=120, elem_classes=["feedback-link-col"]):
+                        feedback_link = gr.HTML(
+                            "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' target='_blank' rel='noopener'>文档问题反馈</a>",
+                            elem_classes=["feedback-link"],
+                        )
                 with gr.Column(elem_classes=["sidebar-card"]):
                     tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
             with gr.Column(scale=5, elem_classes=["content-col"]):
