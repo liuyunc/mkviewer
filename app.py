@@ -959,6 +959,7 @@ def fulltext_search(query: str) -> str:
                 "pre_tags": ["<mark>"],
                 "post_tags": ["</mark>"],
                 "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
+                "max_analyzed_offset": ES_MAX_ANALYZED_OFFSET,
             },
         }
         resp = _es_search_request(
@@ -1081,7 +1082,7 @@ def ui_app():
             return sync_elasticsearch(TREE_DOCS, force=True)
 
         def _activate_search_tab():
-            return gr.Tabs.update(selected="search")
+            return gr.update(selected="search")
 
         # 事件绑定
         demo.load(lambda: _refresh_tree(True), outputs=[tree_html, status_bar])
