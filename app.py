@@ -761,6 +761,7 @@ def fulltext_search(query: str) -> str:
                 "post_tags": ["</mark>"],
                 "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
             },
+            params={"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET},
         )
         search_params = {"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET}
         options = getattr(es, "options", None)
