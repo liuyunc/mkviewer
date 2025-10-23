@@ -282,6 +282,22 @@ def _es_search_request(
     search_params = params or {}
     search_kwargs = {"index": search_index, "body": body}
 
+    def _search_with_params(client):
+        if not search_params:
+            return client.search(**search_kwargs)
+
+        last_exc: Optional[TypeError] = None
+        for keyword in ("params", "query_params"):
+            call_kwargs = dict(search_kwargs)
+            call_kwargs[keyword] = search_params
+            try:
+                return client.search(**call_kwargs)
+            except TypeError as exc:
+                last_exc = exc
+        if last_exc is not None:
+            raise last_exc
+        return client.search(**search_kwargs)
+
     options = getattr(es, "options", None)
     if callable(options):
         options_kwargs = None
@@ -315,29 +331,11 @@ def _es_search_request(
                 options_client = None
         if options_client is not None:
             try:
-                if search_params:
-                    return options_client.search(params=search_params, **search_kwargs)
-                return options_client.search(**search_kwargs)
-            except TypeError as exc:
-                if search_params and "params" in str(exc):
-                    try:
-                        return options_client.search(query_params=search_params, **search_kwargs)
-                    except TypeError:
-                        pass
-                else:
-                    pass
-
-    try:
-        if search_params:
-            return es.search(params=search_params, **search_kwargs)
-        return es.search(**search_kwargs)
-    except TypeError as exc:
-        if search_params and "params" in str(exc):
-            try:
-                return es.search(query_params=search_params, **search_kwargs)
+                return _search_with_params(options_client)
             except TypeError:
                 pass
-        raise
+
+    return _search_with_params(es)
 
 # ==================== 图片链接重写 ====================
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
