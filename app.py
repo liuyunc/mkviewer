@@ -14,6 +14,7 @@ from markdown import Markdown
 from minio import Minio
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import NotFoundError
+from fastapi.responses import JSONResponse
 
 try:
     from elastic_transport import Transport
@@ -924,7 +925,7 @@ body {
 .sidebar-col .status-bar em { color:var(--brand-muted); }
 .sidebar-card {
     position:sticky;
-    top:126px;
+    top:96px;
     display:flex;
     flex-direction:column;
     gap:12px;
@@ -1293,6 +1294,45 @@ def download_link_html(key: str) -> str:
 
 # ==================== Gradio UI ====================
 
+
+def _hero_html(doc_total: Optional[int] = None) -> str:
+    if doc_total is None:
+        stats_text = "<span>文档总数统计中…</span>"
+    else:
+        stats_text = f"<span>文档总数：<strong>{doc_total}</strong></span>"
+    return (
+        f"""
+        <header class='mkv-topbar'>
+            <div class='mkv-brand'>
+                <span class='mkv-logo'>MK</span>
+                <div>
+                    <div class='mkv-brand-title'>{_esc(SITE_TITLE)}</div>
+                    <div class='mkv-brand-subtitle'>MinIO 文档知识库</div>
+                </div>
+            </div>
+        </header>
+        <section class='mkv-hero'>
+            <h1>{_esc(SITE_TITLE)}</h1>
+            <p>在这里浏览、检索和预览来自 MinIO 的知识文档，快速定位你需要的内容。</p>
+            <div class='mkv-meta'>{stats_text}</div>
+        </section>
+        """
+    )
+
+
+def _manifest_payload() -> Dict[str, object]:
+    short_name = SITE_TITLE if len(SITE_TITLE) <= 12 else SITE_TITLE[:12]
+    return {
+        "name": SITE_TITLE,
+        "short_name": short_name,
+        "start_url": ".",
+        "display": "standalone",
+        "background_color": "#ffffff",
+        "theme_color": "#1458d6",
+        "icons": [],
+    }
+
+
 def ui_app():
     with gr.Blocks(
         title=SITE_TITLE,
@@ -1300,28 +1340,7 @@ def ui_app():
         head=MATHJAX_HEAD,
     ) as demo:
         gr.HTML(GLOBAL_CSS + TREE_CSS)
-        gr.HTML(
-            f"""
-            <header class='mkv-topbar'>
-                <div class='mkv-brand'>
-                    <span class='mkv-logo'>MK</span>
-                    <div>
-                        <div class='mkv-brand-title'>{_esc(SITE_TITLE)}</div>
-                        <div class='mkv-brand-subtitle'>MinIO 文档知识库</div>
-                    </div>
-                </div>
-            </header>
-            <section class='mkv-hero'>
-                <h1>{_esc(SITE_TITLE)}</h1>
-                <p>在这里浏览、检索和预览来自 MinIO 的知识文档，快速定位你需要的内容。</p>
-                <div class='mkv-meta'>
-                    <span>Endpoint：{_esc(', '.join(MINIO_ENDPOINTS))}</span>
-                    <span>文档桶：{_esc(DOC_BUCKET)}</span>
-                    <span>前缀：{_esc(DOC_PREFIX or '/')}</span>
-                </div>
-            </section>
-            """
-        )
+        hero_html = gr.HTML(_hero_html())
         with gr.Row(elem_classes=["gr-row"]):
             with gr.Column(scale=1, min_width=340, elem_classes=["sidebar-col"]):
                 gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
@@ -1338,27 +1357,33 @@ def ui_app():
                         show_label=False,
                         placeholder="输入关键字… 然后回车或点搜索",
                         elem_classes=["search-input"],
-                        scale=8,
+                        scale=7,
                     )
                     btn_search = gr.Button("搜索", elem_classes=["search-button"], scale=2)
-                    gr.HTML(
+                    feedback_link = gr.HTML(
                         "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' target='_blank' rel='noopener'>文档问题反馈</a>",
                         elem_classes=["feedback-link"],
+                        scale=2,
                     )
                 with gr.Column(elem_classes=["sidebar-card"]):
                     tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
-            with gr.Column(scale=4, elem_classes=["content-col"]):
+            with gr.Column(scale=5, elem_classes=["content-col"]):
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
+                    with gr.TabItem("目录", id="toc"):
+                        toc_panel = gr.HTML(
+                            "<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>",
+                            elem_classes=["toc-card"],
+                        )
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
                         html_view = gr.HTML("<em>请选择左侧文件…</em>", elem_id="doc-html-view", elem_classes=["doc-preview"])
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
                     with gr.TabItem("全文搜索", id="search"):
-                        search_out = gr.HTML("<em>在左侧输入关键词后点击“搜索”（由 Elasticsearch 提供支持）</em>", elem_classes=["search-panel"])
-            with gr.Column(scale=1, min_width=280, elem_classes=["toc-col"]):
-                gr.Markdown("### 🧭 文档目录", elem_classes=["toc-heading"])
-                toc_panel = gr.HTML("<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>", elem_classes=["toc-card"])
+                        search_out = gr.HTML(
+                            "<em>在左侧输入关键词后点击“搜索”（由 Elasticsearch 提供支持）</em>",
+                            elem_classes=["search-panel"],
+                        )
 
         # 内部状态：是否展开全部
         expand_state = gr.State(True)
@@ -1370,7 +1395,7 @@ def ui_app():
             base = DOC_PREFIX.rstrip("/") + "/" if DOC_PREFIX else ""
             tree = build_tree([d["key"] for d in docs], base_prefix=base)
             status = sync_elasticsearch(docs)
-            return render_tree_html(tree, expand_all), status
+            return render_tree_html(tree, expand_all), status, _hero_html(len(docs))
 
         def _render_cached_tree(expand_all: bool):
             global TREE_DOCS
@@ -1378,7 +1403,7 @@ def ui_app():
                 return _refresh_tree(expand_all)
             base = DOC_PREFIX.rstrip("/") + "/" if DOC_PREFIX else ""
             tree = build_tree([d["key"] for d in TREE_DOCS], base_prefix=base)
-            return render_tree_html(tree, expand_all), gr.update()
+            return render_tree_html(tree, expand_all), gr.update(), gr.update()
 
         def _render_from_key(key: str | None):
             if not key:
@@ -1414,10 +1439,10 @@ def ui_app():
             return gr.update(selected="search")
 
         # 事件绑定
-        demo.load(lambda: _refresh_tree(True), outputs=[tree_html, status_bar])
-        btn_refresh.click(_refresh_tree, inputs=expand_state, outputs=[tree_html, status_bar])
-        btn_expand.click(lambda: True, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar])
-        btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar])
+        demo.load(lambda: _refresh_tree(True), outputs=[tree_html, status_bar, hero_html])
+        btn_refresh.click(_refresh_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
+        btn_expand.click(lambda: True, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
+        btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_clear.click(_clear_cache, outputs=status_bar)
         btn_reindex.click(_force_reindex, outputs=status_bar)
 
@@ -1433,5 +1458,13 @@ def ui_app():
     return demo
 
 if __name__ == "__main__":
-    app = ui_app()
-    app.queue().launch(server_name=BIND_HOST, server_port=BIND_PORT, show_api=False)
+    demo = ui_app()
+    demo = demo.queue()
+    app = demo
+    fastapi_app = demo.app
+
+    @fastapi_app.get("/manifest.json")
+    def manifest_route():  # pragma: no cover - FastAPI integration
+        return JSONResponse(_manifest_payload())
+
+    demo.launch(server_name=BIND_HOST, server_port=BIND_PORT, show_api=False)
