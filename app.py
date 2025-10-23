@@ -3,6 +3,7 @@ import os
 import re
 import tempfile
 from collections import OrderedDict
+from functools import lru_cache
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
@@ -12,6 +13,11 @@ from markdown import markdown
 from minio import Minio
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import NotFoundError
+
+try:
+    from elastic_transport import Transport
+except Exception:  # pragma: no cover - optional dependency guard
+    Transport = None
 
 try:
     import mammoth
@@ -40,29 +46,78 @@ ES_USERNAME = os.getenv("ES_USERNAME", "")
 ES_PASSWORD = os.getenv("ES_PASSWORD", "")
 ES_VERIFY_CERTS = os.getenv("ES_VERIFY_CERTS", "true").strip().lower() == "true"
 ES_TIMEOUT = int(os.getenv("ES_TIMEOUT", "10"))
+ES_COMPAT_VERSION = os.getenv("ES_COMPAT_VERSION", "8").strip()
+if ES_COMPAT_VERSION not in {"7", "8"}:  # Elasticsearch 7.x only accepts compat 7 or 8 headers
+    ES_COMPAT_VERSION = "8"
+ES_MAX_ANALYZED_OFFSET = int(os.getenv("ES_MAX_ANALYZED_OFFSET", "999999"))
+if ES_MAX_ANALYZED_OFFSET <= 0:
+    ES_MAX_ANALYZED_OFFSET = 999999
 
 ES_ENABLED = bool(ES_HOSTS)
 
-MATHJAX_SNIPPET = """
+# Inject MathJax once at the document head so the preview pane can render LaTeX
+# fragments coming from Markdown/Word conversions.  A MutationObserver re-runs the
+# typesetter whenever the preview HTML changes.
+MATHJAX_HEAD = """
 <script>
 window.MathJax = window.MathJax || {
     tex: {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]},
     svg: {fontCache: 'global'}
 };
-if (!window.__MKV_MATHJAX_LOADING__) {
-    window.__MKV_MATHJAX_LOADING__ = true;
-    var script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js';
-    script.async = true;
-    script.onload = function() {
-        window.MathJax && window.MathJax.typesetPromise && window.MathJax.typesetPromise();
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<script>
+(function setupMathJaxObserver() {
+    const targetId = 'doc-html-view';
+    const ensureObserver = () => {
+        const target = document.getElementById(targetId);
+        if (!target) {
+            requestAnimationFrame(ensureObserver);
+            return;
+        }
+        const trigger = () => {
+            if (window.MathJax && window.MathJax.typesetPromise) {
+                if (observer) {
+                    observer.disconnect();
+                }
+                window.MathJax.typesetPromise([target]).catch(() => {}).finally(() => {
+                    startWatching();
+                });
+            }
+        };
+        let observer;
+        let scheduled = false;
+        const schedule = () => {
+            if (scheduled) {
+                return;
+            }
+            scheduled = true;
+            requestAnimationFrame(() => {
+                scheduled = false;
+                trigger();
+            });
+        };
+        const startWatching = () => {
+            if (observer) {
+                observer.disconnect();
+            }
+            observer = new MutationObserver(() => schedule());
+            observer.observe(target, {childList: true, subtree: true});
+        };
+        window._mkviewerTypeset = trigger;
+        startWatching();
+        trigger();
     };
-    document.head.appendChild(script);
-} else if (window.MathJax && window.MathJax.typesetPromise) {
-    window.MathJax.typesetPromise();
-}
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', ensureObserver);
+    } else {
+        ensureObserver();
+    }
+})();
 </script>
 """
+
+MATHJAX_TRIGGER_SNIPPET = "<script>window._mkviewerTypeset && window._mkviewerTypeset();</script>"
 
 # ==================== MinIO 连接 ====================
 _client = None
@@ -87,6 +142,76 @@ def connect() -> Tuple[Minio, str]:
 _es_client: Optional[Elasticsearch] = None
 
 
+@lru_cache(maxsize=2)
+def _compat_transport_class(compat_header: str):
+    """Return a Transport subclass that enforces compatibility headers."""
+    if Transport is None:  # pragma: no cover - optional dependency guard
+        return None
+
+    from inspect import signature, Parameter
+
+    base_sig = signature(Transport.perform_request)
+    base_params = base_sig.parameters
+    accepts = set(base_params)
+    has_var_kw = any(p.kind == Parameter.VAR_KEYWORD for p in base_params.values())
+
+    param_key = None
+    for candidate in ("params", "query_params", "query"):
+        if candidate in accepts:
+            param_key = candidate
+            break
+
+    body_key = None
+    for candidate in ("body", "request_body"):
+        if candidate in accepts:
+            body_key = candidate
+            break
+
+    class _CompatTransport(Transport):
+        def perform_request(self, method, path, params=None, headers=None, body=None, **kwargs):
+            hdrs = dict(headers or {})
+            # Always overwrite the negotiated compatibility headers because the
+            # client populates them with its native major version ("=9") by
+            # default, which Elasticsearch 7.x rejects.  Relying on
+            # ``setdefault`` or only filling missing keys leaves the
+            # incompatible version in place.
+            hdrs["accept"] = compat_header
+            hdrs["content-type"] = compat_header
+
+            call_kwargs = dict(kwargs)
+            if param_key:
+                call_kwargs[param_key] = params
+            elif params is not None:
+                if has_var_kw:
+                    call_kwargs["params"] = params
+                else:  # pragma: no cover - defensive guard for unexpected signatures
+                    raise TypeError("Underlying transport does not accept query parameters")
+
+            if "headers" in accepts:
+                merged = dict(call_kwargs.get("headers", {}))
+                merged.update(hdrs)
+                call_kwargs["headers"] = merged
+            elif has_var_kw:
+                merged = dict(call_kwargs.get("headers", {}))
+                merged.update(hdrs)
+                call_kwargs["headers"] = merged
+            else:  # pragma: no cover - defensive guard for unexpected signatures
+                if hdrs:
+                    raise TypeError("Underlying transport does not accept 'headers'")
+
+            if body_key:
+                call_kwargs[body_key] = body
+            elif body is not None:
+                if has_var_kw:
+                    call_kwargs["body"] = body
+                else:  # pragma: no cover - defensive guard for unexpected signatures
+                    raise TypeError("Underlying transport does not accept request bodies")
+
+            return super().perform_request(method, path, **call_kwargs)
+
+    return _CompatTransport
+
+
 def es_connect() -> Elasticsearch:
     if not ES_ENABLED:
         raise RuntimeError("未配置 Elasticsearch 主机")
@@ -97,6 +222,21 @@ def es_connect() -> Elasticsearch:
         "hosts": ES_HOSTS,
         "verify_certs": ES_VERIFY_CERTS,
         "request_timeout": ES_TIMEOUT,
+    }
+    # The Elasticsearch server rejects requests whose Accept/Content-Type advertise
+    # a future major version (e.g. "compatible-with=9") with HTTP 400.  Explicitly
+    # pinning the compatibility headers avoids the "media_type_header_exception"
+    # that surfaced when refreshing the tree view.
+    compat_header = f"application/vnd.elasticsearch+json; compatible-with={ES_COMPAT_VERSION}"
+    # Some helper APIs overwrite per-request headers, so wrap the transport to
+    # guarantee that every call carries the compatibility header instead of the
+    # client default (which advertised version 9 and triggered HTTP 400).
+    compat_transport = _compat_transport_class(compat_header)
+    if compat_transport is not None:
+        kwargs["transport_class"] = compat_transport
+    kwargs["headers"] = {
+        "accept": compat_header,
+        "content-type": compat_header,
     }
     if ES_USERNAME or ES_PASSWORD:
         kwargs["basic_auth"] = (ES_USERNAME, ES_PASSWORD)
@@ -233,7 +373,7 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
         text = data.decode("utf-8", errors="ignore")
         text2 = rewrite_image_links(text)
         rendered = markdown(text2, extensions=["fenced_code", "tables", "codehilite"])
-        html = "<div class='markdown-body'>" + rendered + "</div>" + MATHJAX_SNIPPET
+        html = "<div class='markdown-body'>" + rendered + "</div>"
     elif doc_type == "docx":
         if mammoth is None:
             raise RuntimeError("未安装 mammoth，无法预览 DOCX 文档。")
@@ -264,8 +404,9 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     else:  # pragma: no cover - 理论上不会走到
         raise RuntimeError(f"未知文档类型：{doc_type}")
 
-    DOC_CACHE.set(key, (etag, doc_type, text, html))
-    return etag, doc_type, text, html
+    html_with_mathjax = html + MATHJAX_TRIGGER_SNIPPET
+    DOC_CACHE.set(key, (etag, doc_type, text, html_with_mathjax))
+    return etag, doc_type, text, html_with_mathjax
 
 # ==================== 目录树 ====================
 
@@ -611,7 +752,7 @@ def fulltext_search(query: str) -> str:
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
         return f"<em>搜索服务不可用：{_esc(str(exc))}</em>"
     try:
-        resp = es.search(
+        search_kwargs = dict(
             index=ES_INDEX,
             query={"multi_match": {"query": query, "fields": ["content"]}},
             size=200,
@@ -621,6 +762,17 @@ def fulltext_search(query: str) -> str:
                 "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
             },
         )
+        search_params = {"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET}
+        options = getattr(es, "options", None)
+        if callable(options):
+            # Elasticsearch 8.x's typed client exposes query-string parameters as
+            # keyword arguments but still allows arbitrary values through the
+            # ``options`` helper.  Using it keeps support for custom parameters
+            # such as ``max_analyzed_offset`` while remaining compatible with
+            # older clients that expect a ``params`` mapping.
+            resp = options(query_params=search_params).search(**search_kwargs)
+        else:
+            resp = es.search(params=search_params, **search_kwargs)
     except NotFoundError:
         return "<em>索引尚未建立，请先同步文档</em>"
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
@@ -658,7 +810,11 @@ def download_link_html(key: str) -> str:
 # ==================== Gradio UI ====================
 
 def ui_app():
-    with gr.Blocks(title=SITE_TITLE, theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate")) as demo:
+    with gr.Blocks(
+        title=SITE_TITLE,
+        theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate"),
+        head=MATHJAX_HEAD,
+    ) as demo:
         gr.HTML(GLOBAL_CSS + TREE_CSS)
         gr.HTML(
             f"<div class='mkv-header'><h1>{_esc(SITE_TITLE)}</h1>"
@@ -681,7 +837,7 @@ def ui_app():
                 with gr.Tabs(selected="preview", elem_id="content-tabs") as content_tabs:
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("")
-                        html_view = gr.HTML("<em>请选择左侧文件…</em>")
+                        html_view = gr.HTML("<em>请选择左侧文件…</em>", elem_id="doc-html-view")
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本")
                     with gr.TabItem("全文搜索", id="search"):
