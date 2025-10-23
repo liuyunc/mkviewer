@@ -833,7 +833,8 @@ def fulltext_search(query: str) -> str:
     try:
         search_body = {
             "size": 200,
-            "query": {"multi_match": {"query": query, "fields": ["content"]}},
+            # 使用 match 查询与 Postman 中保持一致，避免 multi_match 在仅有单字段时出现兼容性问题
+            "query": {"match": {"content": {"query": query}}},
             "highlight": {
                 "pre_tags": ["<mark>"],
                 "post_tags": ["</mark>"],
