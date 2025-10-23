@@ -145,6 +145,25 @@ def _compat_transport_class(compat_header: str):
     if Transport is None:  # pragma: no cover - optional dependency guard
         return None
 
+    from inspect import signature, Parameter
+
+    base_sig = signature(Transport.perform_request)
+    base_params = base_sig.parameters
+    accepts = set(base_params)
+    has_var_kw = any(p.kind == Parameter.VAR_KEYWORD for p in base_params.values())
+
+    param_key = None
+    for candidate in ("params", "query_params", "query"):
+        if candidate in accepts:
+            param_key = candidate
+            break
+
+    body_key = None
+    for candidate in ("body", "request_body"):
+        if candidate in accepts:
+            body_key = candidate
+            break
+
     class _CompatTransport(Transport):
         def perform_request(self, method, path, params=None, headers=None, body=None, **kwargs):
             hdrs = dict(headers or {})
@@ -153,14 +172,37 @@ def _compat_transport_class(compat_header: str):
                 hdrs["accept"] = compat_header
             if "content-type" not in lower:
                 hdrs["content-type"] = compat_header
-            return super().perform_request(
-                method,
-                path,
-                params=params,
-                headers=hdrs,
-                body=body,
-                **kwargs,
-            )
+
+            call_kwargs = dict(kwargs)
+            if param_key:
+                call_kwargs[param_key] = params
+            elif params is not None:
+                if has_var_kw:
+                    call_kwargs["params"] = params
+                else:  # pragma: no cover - defensive guard for unexpected signatures
+                    raise TypeError("Underlying transport does not accept query parameters")
+
+            if "headers" in accepts:
+                merged = dict(call_kwargs.get("headers", {}))
+                merged.update(hdrs)
+                call_kwargs["headers"] = merged
+            elif has_var_kw:
+                merged = dict(call_kwargs.get("headers", {}))
+                merged.update(hdrs)
+                call_kwargs["headers"] = merged
+            else:  # pragma: no cover - defensive guard for unexpected signatures
+                if hdrs:
+                    raise TypeError("Underlying transport does not accept 'headers'")
+
+            if body_key:
+                call_kwargs[body_key] = body
+            elif body is not None:
+                if has_var_kw:
+                    call_kwargs["body"] = body
+                else:  # pragma: no cover - defensive guard for unexpected signatures
+                    raise TypeError("Underlying transport does not accept request bodies")
+
+            return super().perform_request(method, path, **call_kwargs)
 
     return _CompatTransport
 
