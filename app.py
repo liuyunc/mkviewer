@@ -167,11 +167,13 @@ def _compat_transport_class(compat_header: str):
     class _CompatTransport(Transport):
         def perform_request(self, method, path, params=None, headers=None, body=None, **kwargs):
             hdrs = dict(headers or {})
-            lower = {k.lower() for k in hdrs}
-            if "accept" not in lower:
-                hdrs["accept"] = compat_header
-            if "content-type" not in lower:
-                hdrs["content-type"] = compat_header
+            # Always overwrite the negotiated compatibility headers because the
+            # client populates them with its native major version ("=9") by
+            # default, which Elasticsearch 7.x rejects.  Relying on
+            # ``setdefault`` or only filling missing keys leaves the
+            # incompatible version in place.
+            hdrs["accept"] = compat_header
+            hdrs["content-type"] = compat_header
 
             call_kwargs = dict(kwargs)
             if param_key:
@@ -230,8 +232,8 @@ def es_connect() -> Elasticsearch:
     if compat_transport is not None:
         kwargs["transport_class"] = compat_transport
     kwargs["headers"] = {
-        "Accept": compat_header,
-        "Content-Type": compat_header,
+        "accept": compat_header,
+        "content-type": compat_header,
     }
     if ES_USERNAME or ES_PASSWORD:
         kwargs["basic_auth"] = (ES_USERNAME, ES_PASSWORD)
