@@ -889,11 +889,18 @@ body {
     color:var(--brand-muted);
     line-height:1.6;
 }
+.mkv-meta-bar {
+    display:flex;
+    flex-wrap:wrap;
+    gap:12px;
+    align-items:center;
+    justify-content:space-between;
+    margin-top:14px;
+}
 .mkv-meta {
     display:flex;
     flex-wrap:wrap;
-    gap:14px;
-    margin-top:14px;
+    gap:12px;
     font-size:.95rem;
 }
 .mkv-meta span {
@@ -901,6 +908,14 @@ body {
     border-radius:999px;
     background:var(--brand-primary-ghost);
     color:var(--brand-primary);
+}
+.mkv-meta-link {
+    margin-left:auto;
+    display:flex;
+    align-items:center;
+}
+.mkv-meta-link .mkv-link {
+    white-space:nowrap;
 }
 .gr-row {
     gap:24px !important;
@@ -925,7 +940,7 @@ body {
 .sidebar-col .status-bar em { color:var(--brand-muted); }
 .sidebar-card {
     position:sticky;
-    top:96px;
+    top:60px;
     display:flex;
     flex-direction:column;
     gap:12px;
@@ -986,34 +1001,15 @@ body {
     margin:12px 0 6px;
     letter-spacing:.02em;
 }
-.search-row {
+.search-stack {
     display:flex;
-    align-items:center;
+    flex-direction:column;
     gap:10px;
-}
-.search-row .search-input {
-    flex:1;
-}
-.search-row .search-button {
-    flex:0;
-}
-.search-row .feedback-link-col {
-    flex:0;
-    display:flex;
-    justify-content:flex-end;
 }
 .search-button button {
     width:100%;
     border-radius:16px !important;
     padding:10px 0 !important;
-}
-.feedback-link {
-    margin-left:auto;
-    display:flex;
-    align-items:center;
-}
-.feedback-link .mkv-link {
-    white-space:nowrap;
 }
 .content-col {
     display:flex;
@@ -1299,9 +1295,21 @@ def download_link_html(key: str) -> str:
 
 def _hero_html(doc_total: Optional[int] = None) -> str:
     if doc_total is None:
-        stats_text = "<span>文档总数统计中…</span>"
+        total_span = "<span>文档总数统计中…</span>"
     else:
-        stats_text = f"<span>文档总数：<strong>{doc_total}</strong></span>"
+        total_span = f"<span>文档总数：<strong>{doc_total}</strong></span>"
+    endpoints = ", ".join([e.strip() for e in MINIO_ENDPOINTS if e.strip()])
+    endpoint_text = _esc(endpoints) if endpoints else "-"
+    meta_items = [
+        total_span,
+        f"<span>Endpoint：{endpoint_text}</span>",
+        f"<span>文档桶：{_esc(DOC_BUCKET)}</span>",
+        f"<span>前缀：{_esc(DOC_PREFIX or '/')}</span>",
+    ]
+    feedback_link = (
+        "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' "
+        "target='_blank' rel='noopener'>文档问题反馈</a>"
+    )
     return (
         f"""
         <header class='mkv-topbar'>
@@ -1316,7 +1324,10 @@ def _hero_html(doc_total: Optional[int] = None) -> str:
         <section class='mkv-hero'>
             <h1>{_esc(SITE_TITLE)}</h1>
             <p>在这里浏览、检索和预览来自 MinIO 的知识文档，快速定位你需要的内容。</p>
-            <div class='mkv-meta'>{stats_text}</div>
+            <div class='mkv-meta-bar'>
+                <div class='mkv-meta'>{''.join(meta_items)}</div>
+                <div class='mkv-meta-link'>{feedback_link}</div>
+            </div>
         </section>
         """
     )
@@ -1353,22 +1364,16 @@ def ui_app():
                     btn_clear = gr.Button("清空缓存")
                     btn_reindex = gr.Button("重建索引", variant="secondary")
                 status_bar = gr.HTML("", elem_classes=["status-bar"])
+                with gr.Column(elem_classes=["sidebar-card"]):
+                    tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
                 gr.HTML("<div class='search-title'>全文搜索</div>", elem_classes=["search-title"])
-                with gr.Row(elem_classes=["search-row"]):
+                with gr.Column(elem_classes=["search-stack"]):
                     q = gr.Textbox(
                         show_label=False,
                         placeholder="输入关键字… 然后回车或点搜索",
                         elem_classes=["search-input"],
-                        scale=7,
                     )
-                    btn_search = gr.Button("搜索", elem_classes=["search-button"], scale=2)
-                    with gr.Column(scale=2, min_width=120, elem_classes=["feedback-link-col"]):
-                        feedback_link = gr.HTML(
-                            "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' target='_blank' rel='noopener'>文档问题反馈</a>",
-                            elem_classes=["feedback-link"],
-                        )
-                with gr.Column(elem_classes=["sidebar-card"]):
-                    tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
+                    btn_search = gr.Button("搜索", elem_classes=["search-button"])
             with gr.Column(scale=5, elem_classes=["content-col"]):
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
                     with gr.TabItem("目录", id="toc"):
