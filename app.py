@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import re
 import tempfile
@@ -268,13 +269,15 @@ def _es_search_request(es: Elasticsearch, body: Dict, params: Optional[Dict] = N
     transport = getattr(es, "transport", None)
     if transport is None:  # pragma: no cover - defensive guard for unexpected clients
         raise RuntimeError("Elasticsearch 客户端缺少底层 transport")
-    resp = transport.perform_request(
-        "POST",
-        f"/{ES_INDEX}/_search",
-        params=params,
-        body=body,
-    )
-    return getattr(resp, "body", resp)
+    path = f"/{ES_INDEX}/_search"
+    if params:
+        query = urlencode(params, doseq=True)
+        path = f"{path}?{query}"
+    resp = transport.perform_request("POST", path, body=body)
+    payload = getattr(resp, "body", resp)
+    if isinstance(payload, (bytes, bytearray)):
+        payload = json.loads(payload.decode("utf-8", errors="ignore"))
+    return payload
 
 # ==================== 图片链接重写 ====================
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
@@ -317,6 +320,20 @@ def rewrite_image_links(md_text: str) -> str:
     md_text = re.sub(r"<img[^>]+src=\"([^\"]+)\"", repl_img, md_text, flags=re.IGNORECASE)
     md_text = re.sub(r"<img[^>]+src='([^']+)'", repl_img, md_text, flags=re.IGNORECASE)
     return md_text
+
+# ==================== 文档转换辅助 ====================
+
+def _docx_from_bytes(data: bytes) -> Tuple[str, str]:
+    if mammoth is None:
+        raise RuntimeError("未安装 mammoth，无法预览 DOCX 文档。")
+    try:
+        html_result = mammoth.convert_to_html(io.BytesIO(data))
+        text_result = mammoth.extract_raw_text(io.BytesIO(data))
+    except Exception as exc:  # pragma: no cover - 依赖第三方解析
+        raise RuntimeError(f"DOCX 解析失败：{exc}") from exc
+    text = text_result.value
+    html = "<div class='docx-preview'>" + html_result.value + "</div>"
+    return text, html
 
 # ==================== 缓存（按 ETag） ====================
 class LRU:
@@ -390,32 +407,33 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
         rendered = markdown(text2, extensions=["fenced_code", "tables", "codehilite"])
         html = "<div class='markdown-body'>" + rendered + "</div>"
     elif doc_type == "docx":
-        if mammoth is None:
-            raise RuntimeError("未安装 mammoth，无法预览 DOCX 文档。")
-        try:
-            html_result = mammoth.convert_to_html(io.BytesIO(data))
-            text_result = mammoth.extract_raw_text(io.BytesIO(data))
-        except Exception as exc:  # pragma: no cover - 转换错误主要依赖外部库
-            raise RuntimeError(f"DOCX 解析失败：{exc}") from exc
-        text = text_result.value
-        html = "<div class='docx-preview'>" + html_result.value + "</div>"
+        text, html = _docx_from_bytes(data)
     elif doc_type == "doc":
-        if textract is None:
-            raise RuntimeError("未安装 textract 或其依赖，无法预览 DOC 文档。")
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
-                tmp.write(data)
-                tmp.flush()
-                tmp_name = tmp.name
+        converted = False
+        if data.startswith(b"PK"):
             try:
-                text_bytes = textract.process(tmp_name)
-            finally:
-                if os.path.exists(tmp_name):
-                    os.unlink(tmp_name)
-        except Exception as exc:  # pragma: no cover - 转换错误主要依赖外部库
-            raise RuntimeError(f"DOC 解析失败：{exc}") from exc
-        text = text_bytes.decode("utf-8", errors="ignore")
-        html = _plain_text_html(text)
+                text, html = _docx_from_bytes(data)
+                converted = True
+            except Exception:
+                # 如果伪装成 DOCX 的 DOC 解析失败，继续尝试传统流程
+                pass
+        if not converted:
+            if textract is None:
+                raise RuntimeError("未安装 textract 或其依赖，无法预览 DOC 文档。")
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
+                    tmp.write(data)
+                    tmp.flush()
+                    tmp_name = tmp.name
+                try:
+                    text_bytes = textract.process(tmp_name)
+                finally:
+                    if os.path.exists(tmp_name):
+                        os.unlink(tmp_name)
+            except Exception as exc:  # pragma: no cover - 转换错误主要依赖外部库
+                raise RuntimeError(f"DOC 解析失败：{exc}") from exc
+            text = text_bytes.decode("utf-8", errors="ignore")
+            html = _plain_text_html(text)
     else:  # pragma: no cover - 理论上不会走到
         raise RuntimeError(f"未知文档类型：{doc_type}")
 
