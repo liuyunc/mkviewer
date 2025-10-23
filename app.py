@@ -269,20 +269,140 @@ def ensure_es_index(es: Elasticsearch) -> None:
     )
 
 
-def _es_search_request(es: Elasticsearch, body: Dict, params: Optional[Dict] = None):
-    """Execute a search request while preserving compatibility headers."""
+def _es_search_request(
+    es: Elasticsearch,
+    body: Dict,
+    params: Optional[Dict] = None,
+    *,
+    index: Optional[str] = None,
+):
+    """Execute a search request while preserving compatibility across client versions."""
+
+    search_index = index or ES_INDEX
+    search_params = params or {}
+    search_kwargs = {"index": search_index, "body": body}
+
+    if not search_params:
+        return es.search(**search_kwargs)
+
+    attempt_errors: List[str] = []
+    last_type_error: Optional[TypeError] = None
+
+    def _record_type_error(label: str, exc: TypeError) -> None:
+        nonlocal last_type_error
+        attempt_errors.append(f"{label}: {exc}")
+        last_type_error = exc
+
+    def _try_call(label: str, func):
+        try:
+            return func()
+        except TypeError as exc:
+            _record_type_error(label, exc)
+            return None
+
+    direct_result = _try_call(
+        "es.search(**search_params)",
+        lambda: es.search(**search_kwargs, **search_params),
+    )
+    if direct_result is not None:
+        return direct_result
+
+    params_result = _try_call(
+        "es.search(params=…)",
+        lambda: es.search(**search_kwargs, params=search_params),
+    )
+    if params_result is not None:
+        return params_result
+
+    query_params_result = _try_call(
+        "es.search(query_params=…)",
+        lambda: es.search(**search_kwargs, query_params=search_params),
+    )
+    if query_params_result is not None:
+        return query_params_result
+
+    options = getattr(es, "options", None)
+    option_clients: List[Tuple[str, Elasticsearch]] = []
+    if callable(options):
+        option_with_params = _try_call(
+            "es.options(params=…)",
+            lambda: options(params=search_params),
+        )
+        if option_with_params is not None:
+            option_clients.append(("es.options(params=…)", option_with_params))
+
+        option_with_query_params = _try_call(
+            "es.options(query_params=…)",
+            lambda: options(query_params=search_params),
+        )
+        if option_with_query_params is not None:
+            option_clients.append(("es.options(query_params=…)", option_with_query_params))
+
+        option_default = _try_call("es.options()", lambda: options())
+        if option_default is not None:
+            option_clients.append(("es.options()", option_default))
+
+    for label, client in option_clients:
+        no_param_result = _try_call(
+            f"{label}.search()",
+            lambda c=client: c.search(**search_kwargs),
+        )
+        if no_param_result is not None:
+            return no_param_result
+
+        direct_option_result = _try_call(
+            f"{label}.search(**search_params)",
+            lambda c=client: c.search(**search_kwargs, **search_params),
+        )
+        if direct_option_result is not None:
+            return direct_option_result
+
+        option_params_result = _try_call(
+            f"{label}.search(params=…)",
+            lambda c=client: c.search(**search_kwargs, params=search_params),
+        )
+        if option_params_result is not None:
+            return option_params_result
+
+        option_query_params_result = _try_call(
+            f"{label}.search(query_params=…)",
+            lambda c=client: c.search(**search_kwargs, query_params=search_params),
+        )
+        if option_query_params_result is not None:
+            return option_query_params_result
+
     transport = getattr(es, "transport", None)
-    if transport is None:  # pragma: no cover - defensive guard for unexpected clients
-        raise RuntimeError("Elasticsearch 客户端缺少底层 transport")
-    path = f"/{ES_INDEX}/_search"
-    if params:
-        query = urlencode(params, doseq=True)
-        path = f"{path}?{query}"
-    resp = transport.perform_request("POST", path, body=body)
-    payload = getattr(resp, "body", resp)
-    if isinstance(payload, (bytes, bytearray)):
-        payload = json.loads(payload.decode("utf-8", errors="ignore"))
-    return payload
+    if transport is not None:
+        def _transport_call():
+            path_builder = getattr(es, "_make_path", None)
+            path = None
+            if callable(path_builder):
+                try:
+                    path = path_builder(search_index, "_search")
+                except Exception:
+                    path = None
+            if not path:
+                idx = search_index
+                if isinstance(idx, (list, tuple)):
+                    idx = ",".join(idx)
+                path = "/_search" if not idx else f"/{idx}/_search"
+            return transport.perform_request(
+                "POST",
+                path,
+                params=search_params,
+                body=body,
+            )
+
+        transport_result = _try_call("transport.perform_request", _transport_call)
+        if transport_result is not None:
+            return transport_result
+
+    if last_type_error is not None:
+        raise TypeError(
+            f"{last_type_error} (search attempts: {'; '.join(attempt_errors)})"
+        ) from last_type_error
+
+    return es.search(**search_kwargs)
 
 # ==================== 图片链接重写 ====================
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
@@ -833,7 +953,8 @@ def fulltext_search(query: str) -> str:
     try:
         search_body = {
             "size": 200,
-            "query": {"multi_match": {"query": query, "fields": ["content"]}},
+            # 使用 match 查询与 Postman 中保持一致，避免 multi_match 在仅有单字段时出现兼容性问题
+            "query": {"match": {"content": {"query": query}}},
             "highlight": {
                 "pre_tags": ["<mark>"],
                 "post_tags": ["</mark>"],
