@@ -27,8 +27,13 @@ except Exception:  # pragma: no cover - optional dependency guard
 
 try:
     import textract
+    try:
+        from textract.exceptions import ShellError as TextractShellError  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency guard
+        TextractShellError = Exception
 except Exception:  # pragma: no cover - optional dependency guard
     textract = None
+    TextractShellError = Exception
 
 # ==================== 环境变量 ====================
 MINIO_ENDPOINTS = os.getenv("MINIO_ENDPOINTS", "10.20.41.24:9005,10.20.40.101:9005").split(",")
@@ -61,10 +66,10 @@ ES_ENABLED = bool(ES_HOSTS)
 # typesetter whenever the preview HTML changes.
 MATHJAX_HEAD = """
 <script>
-window.MathJax = window.MathJax || {
-    tex: {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]},
-    svg: {fontCache: 'global'}
-};
+window.MathJax = window.MathJax || {};
+window.MathJax.tex = window.MathJax.tex || {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]};
+window.MathJax.svg = window.MathJax.svg || {fontCache: 'global'};
+window.MathJax.startup = Object.assign({typeset: false}, window.MathJax.startup || {});
 </script>
 <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 <script>
@@ -430,10 +435,17 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
                 finally:
                     if os.path.exists(tmp_name):
                         os.unlink(tmp_name)
-            except Exception as exc:  # pragma: no cover - 转换错误主要依赖外部库
+            except TextractShellError as exc:  # pragma: no cover - 依赖外部命令
+                fallback = _decode_possible_text(data)
+                if fallback is None:
+                    raise RuntimeError(f"DOC 解析失败：{exc}") from exc
+                text = fallback
+                html = _plain_text_html(text)
+            except Exception as exc:  # pragma: no cover - 其它未知错误
                 raise RuntimeError(f"DOC 解析失败：{exc}") from exc
-            text = text_bytes.decode("utf-8", errors="ignore")
-            html = _plain_text_html(text)
+            else:
+                text = text_bytes.decode("utf-8", errors="ignore")
+                html = _plain_text_html(text)
     else:  # pragma: no cover - 理论上不会走到
         raise RuntimeError(f"未知文档类型：{doc_type}")
 
@@ -459,6 +471,35 @@ def build_tree(files: List[str], base_prefix: str = "") -> Dict:
 
 def _esc(t: str) -> str:
     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _decode_possible_text(data: bytes) -> Optional[str]:
+    """Attempt to coerce binary bytes into readable text for malformed DOC files."""
+    if not data:
+        return None
+    if data.startswith(b"\xd0\xcf\x11\xe0"):  # Compound File header -> likely genuine DOC
+        return None
+    sample = data.strip(b"\x00")
+    if not sample:
+        return None
+    encodings = ("utf-8", "gbk", "gb2312", "latin-1")
+    for enc in encodings:
+        try:
+            text = sample.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        preview = normalized[:2000]
+        total = len(preview)
+        if not total:
+            continue
+        printable = sum(1 for ch in preview if ch.isprintable() or ch in "\n\t")
+        if printable / total < 0.85:
+            continue
+        cleaned = normalized.strip()
+        if cleaned:
+            return cleaned
+    return None
 
 
 def _file_icon(name: str) -> str:
@@ -792,20 +833,22 @@ def fulltext_search(query: str) -> str:
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
         return f"<em>搜索服务不可用：{_esc(str(exc))}</em>"
     try:
+        search_body = {
+            "size": 200,
+            "query": {"multi_match": {"query": query, "fields": ["content"]}},
+            "highlight": {
+                "pre_tags": ["<mark>"],
+                "post_tags": ["</mark>"],
+                "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
+            },
+        }
         resp = _es_search_request(
             es,
-            {
-                "size": 200,
-                "query": {"multi_match": {"query": query, "fields": ["content"]}},
-                "highlight": {
-                    "pre_tags": ["<mark>"],
-                    "post_tags": ["</mark>"],
-                    "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
-                },
-            },
+            search_body,
             params={"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET},
         )
         search_params = {"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET}
+        search_kwargs = {"index": ES_INDEX, "body": search_body}
         options = getattr(es, "options", None)
         if callable(options):
             # Elasticsearch's typed client changed the keyword used for query
