@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 
 import gradio as gr
-from markdown import markdown
+from markdown import Markdown
 from minio import Minio
 from elasticsearch import Elasticsearch
 from elasticsearch.exceptions import NotFoundError
@@ -413,8 +413,36 @@ SUPPORTED_EXTS = {
     ".docx": "docx",
     ".doc": "doc",
 }
-MARKDOWN_EXTS = (".md", ".markdown")
+MARKDOWN_EXTENSIONS = ["fenced_code", "tables", "codehilite", "toc"]
 #IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
+
+
+def _render_markdown_toc(tokens: List[Dict[str, object]]) -> str:
+    """Render a nested table of contents structure from Markdown toc_tokens."""
+
+    def _build(items: List[Dict[str, object]]) -> str:
+        parts: List[str] = []
+        for item in items:
+            name = str(item.get("name") or "").strip()
+            anchor = str(item.get("id") or "").strip()
+            if not name or not anchor:
+                continue
+            parts.append("<li>")
+            parts.append(f"<a href='#{_esc(anchor)}'>{_esc(name)}</a>")
+            children = item.get("children") or []
+            if isinstance(children, list):
+                child_html = _build(children)
+                if child_html:
+                    parts.append(child_html)
+            parts.append("</li>")
+        if not parts:
+            return ""
+        return "<ul class='toc-list'>" + "".join(parts) + "</ul>"
+
+    tree_html = _build(tokens)
+    if not tree_html:
+        return ""
+    return "<div class='toc-tree'>" + tree_html + "</div>"
 def _to_public_image_url(path: str) -> str:
     p = path.strip().lstrip("./").lstrip("/")
     parts = [quote(seg) for seg in p.split("/")]
@@ -478,7 +506,7 @@ class LRU:
     def clear(self):
         self.od.clear()
 
-DOC_CACHE = LRU(512)  # key -> (etag, doc_type, text, html)
+DOC_CACHE = LRU(512)  # key -> (etag, doc_type, text, html, toc)
 
 TREE_DOCS: List[Dict[str, str]] = []
 
@@ -507,8 +535,8 @@ def _plain_text_html(text: str) -> str:
     return "<div class='doc-preview'>" + esc.replace("\n", "<br>") + "</div>"
 
 
-def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, str, str]:
-    """返回 (etag, doc_type, text, html)。"""
+def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, str, str, str]:
+    """返回 (etag, doc_type, text, html, toc)。"""
     c, _ = connect()
     ext = os.path.splitext(key)[1].lower()
     doc_type = SUPPORTED_EXTS.get(ext)
@@ -526,10 +554,13 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     data = resp.read()
     resp.close(); resp.release_conn()
 
+    toc_html = ""
     if doc_type == "markdown":
         text = data.decode("utf-8", errors="ignore")
         text2 = rewrite_image_links(text)
-        rendered = markdown(text2, extensions=["fenced_code", "tables", "codehilite"])
+        md_renderer = Markdown(extensions=MARKDOWN_EXTENSIONS, extension_configs={"toc": {"permalink": False}})
+        rendered = md_renderer.convert(text2)
+        toc_html = _render_markdown_toc(getattr(md_renderer, "toc_tokens", []))
         html = "<div class='markdown-body'>" + rendered + "</div>"
     elif doc_type == "docx":
         text, html = _docx_from_bytes(data)
@@ -570,8 +601,8 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
         raise RuntimeError(f"未知文档类型：{doc_type}")
 
     html_with_mathjax = html + MATHJAX_TRIGGER_SNIPPET
-    DOC_CACHE.set(key, (etag, doc_type, text, html_with_mathjax))
-    return etag, doc_type, text, html_with_mathjax
+    DOC_CACHE.set(key, (etag, doc_type, text, html_with_mathjax, toc_html))
+    return etag, doc_type, text, html_with_mathjax, toc_html
 
 # ==================== 目录树 ====================
 
@@ -686,7 +717,7 @@ def sync_elasticsearch(docs: List[Dict[str, str]], force: bool = False) -> str:
         if not force and existing_map.get(key) == etag_hint:
             continue
         try:
-            etag, doc_type, text, _ = get_document(key, known_etag=etag_hint)
+            etag, doc_type, text, _, _ = get_document(key, known_etag=etag_hint)
         except Exception as exc:
             errors.append(f"{key}: {exc}")
             continue
@@ -948,11 +979,38 @@ body {
     font-size:.95rem !important;
     box-shadow:none !important;
 }
-.search-input label { font-weight:600; }
+.search-title {
+    font-weight:600;
+    color:var(--brand-muted);
+    margin:12px 0 6px;
+    letter-spacing:.02em;
+}
+.search-row {
+    display:flex;
+    align-items:center;
+    gap:10px;
+}
+.search-row .search-input {
+    flex:1;
+}
+.search-row .search-button {
+    flex:0;
+}
+.search-row .feedback-link {
+    flex:0;
+}
 .search-button button {
     width:100%;
     border-radius:16px !important;
     padding:10px 0 !important;
+}
+.feedback-link {
+    margin-left:auto;
+    display:flex;
+    align-items:center;
+}
+.feedback-link .mkv-link {
+    white-space:nowrap;
 }
 .content-col {
     display:flex;
@@ -965,6 +1023,54 @@ body {
     border:1px solid var(--brand-border);
     box-shadow:var(--brand-shadow);
     padding:18px 24px;
+}
+.toc-col {
+    position:sticky;
+    top:126px;
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+    align-self:flex-start;
+}
+.toc-heading h3 {
+    margin-bottom:12px !important;
+    color:var(--brand-muted);
+}
+.toc-card {
+    background:var(--brand-card);
+    border-radius:var(--brand-radius);
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
+    padding:18px 20px;
+    max-height:72vh;
+    overflow:auto;
+}
+.toc-card::-webkit-scrollbar { width:8px; }
+.toc-card::-webkit-scrollbar-thumb {
+    background:rgba(20,88,214,0.25);
+    border-radius:10px;
+}
+.toc-tree {
+    font-size:.95rem;
+    line-height:1.6;
+}
+.toc-tree > .toc-list { padding-left:0; }
+.toc-tree ul {
+    list-style:none;
+    padding-left:1.1rem;
+    margin:6px 0;
+}
+.toc-tree li { margin:4px 0; }
+.toc-tree a {
+    color:var(--brand-primary);
+    text-decoration:none;
+    font-weight:500;
+}
+.toc-tree a:hover { text-decoration:underline; }
+.toc-empty {
+    color:var(--brand-muted);
+    font-size:.95rem;
+    line-height:1.6;
 }
 .download-panel {
     margin-bottom:12px;
@@ -1075,6 +1181,8 @@ body {
     }
     .sidebar-card { position:static; }
     .sidebar-tree { max-height:unset; }
+    .toc-col { position:static; }
+    .toc-card { max-height:unset; }
 }
 @media (max-width:860px) {
     .gradio-container { padding:10px 12px 32px; }
@@ -1202,9 +1310,6 @@ def ui_app():
                         <div class='mkv-brand-subtitle'>MinIO 文档知识库</div>
                     </div>
                 </div>
-                <nav class='mkv-links'>
-                    <a class='mkv-link' href='http://10.20.41.24:9001/' target='_blank' rel='noopener'>文档问题反馈</a>
-                </nav>
             </header>
             <section class='mkv-hero'>
                 <h1>{_esc(SITE_TITLE)}</h1>
@@ -1227,8 +1332,19 @@ def ui_app():
                     btn_clear = gr.Button("清空缓存")
                     btn_reindex = gr.Button("重建索引", variant="secondary")
                 status_bar = gr.HTML("", elem_classes=["status-bar"])
-                q = gr.Textbox(label="全文搜索", placeholder="输入关键字… 然后回车或点搜索", elem_classes=["search-input"])
-                btn_search = gr.Button("搜索", elem_classes=["search-button"])
+                gr.HTML("<div class='search-title'>全文搜索</div>", elem_classes=["search-title"])
+                with gr.Row(elem_classes=["search-row"]):
+                    q = gr.Textbox(
+                        show_label=False,
+                        placeholder="输入关键字… 然后回车或点搜索",
+                        elem_classes=["search-input"],
+                        scale=8,
+                    )
+                    btn_search = gr.Button("搜索", elem_classes=["search-button"], scale=2)
+                    gr.HTML(
+                        "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' target='_blank' rel='noopener'>文档问题反馈</a>",
+                        elem_classes=["feedback-link"],
+                    )
                 with gr.Column(elem_classes=["sidebar-card"]):
                     tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
             with gr.Column(scale=4, elem_classes=["content-col"]):
@@ -1240,6 +1356,9 @@ def ui_app():
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
                     with gr.TabItem("全文搜索", id="search"):
                         search_out = gr.HTML("<em>在左侧输入关键词后点击“搜索”（由 Elasticsearch 提供支持）</em>", elem_classes=["search-panel"])
+            with gr.Column(scale=1, min_width=280, elem_classes=["toc-col"]):
+                gr.Markdown("### 🧭 文档目录", elem_classes=["toc-heading"])
+                toc_panel = gr.HTML("<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>", elem_classes=["toc-card"])
 
         # 内部状态：是否展开全部
         expand_state = gr.State(True)
@@ -1263,13 +1382,19 @@ def ui_app():
 
         def _render_from_key(key: str | None):
             if not key:
-                return "", "<em>未选择文件</em>", ""
+                return "", "<em>未选择文件</em>", "", "<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>"
             try:
-                _, doc_type, text, html = get_document(key)
+                _, doc_type, text, html, toc = get_document(key)
             except Exception as exc:
                 msg = _esc(str(exc))
-                return download_link_html(key), f"<div class='doc-error'>{msg}</div>", msg
-            return download_link_html(key), html, text
+                return download_link_html(key), f"<div class='doc-error'>{msg}</div>", msg, "<div class='toc-empty'>无法生成目录</div>"
+
+            if doc_type == "markdown":
+                toc_html = toc or "<div class='toc-empty'>文档中暂无可用标题</div>"
+            else:
+                toc_html = "<div class='toc-empty'>当前文档类型未提供目录</div>"
+
+            return download_link_html(key), html, text, toc_html
 
         def _search(query: str):
             return fulltext_search(query)
@@ -1304,7 +1429,7 @@ def ui_app():
             key = request.query_params.get("key") if request and request.query_params else None
             return _render_from_key(key)
 
-        demo.load(on_load_with_req, outputs=[dl_html, html_view, md_view])
+        demo.load(on_load_with_req, outputs=[dl_html, html_view, md_view, toc_panel])
     return demo
 
 if __name__ == "__main__":
