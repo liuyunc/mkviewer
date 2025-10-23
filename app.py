@@ -438,7 +438,7 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
             except TextractShellError as exc:  # pragma: no cover - 依赖外部命令
                 fallback = _decode_possible_text(data)
                 if fallback is None:
-                    raise RuntimeError(f"DOC 解析失败：{exc}") from exc
+                    fallback = f"无法解析为有效的 Word 文档：{exc}"
                 text = fallback
                 html = _plain_text_html(text)
             except Exception as exc:  # pragma: no cover - 其它未知错误
@@ -477,8 +477,6 @@ def _decode_possible_text(data: bytes) -> Optional[str]:
     """Attempt to coerce binary bytes into readable text for malformed DOC files."""
     if not data:
         return None
-    if data.startswith(b"\xd0\xcf\x11\xe0"):  # Compound File header -> likely genuine DOC
-        return None
     sample = data.strip(b"\x00")
     if not sample:
         return None
@@ -494,7 +492,7 @@ def _decode_possible_text(data: bytes) -> Optional[str]:
         if not total:
             continue
         printable = sum(1 for ch in preview if ch.isprintable() or ch in "\n\t")
-        if printable / total < 0.85:
+        if printable / total < 0.6:
             continue
         cleaned = normalized.strip()
         if cleaned:
@@ -847,50 +845,6 @@ def fulltext_search(query: str) -> str:
             search_body,
             params={"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET},
         )
-        search_params = {"max_analyzed_offset": ES_MAX_ANALYZED_OFFSET}
-        search_kwargs = {"index": ES_INDEX, "body": search_body}
-        options = getattr(es, "options", None)
-        if callable(options):
-            # Elasticsearch's typed client changed the keyword used for query
-            # parameters (``query_params`` vs ``params``) between releases.  We
-            # inspect the bound ``options`` signature so we only forward
-            # supported keywords, falling back to the legacy ``params`` map on
-            # clients that lack ``options`` entirely.
-            options_kwargs = None
-            options_client = None
-            try:
-                from inspect import Parameter, signature
-
-                sig = signature(options)
-            except (TypeError, ValueError):  # pragma: no cover - some callables lack signatures
-                sig = None
-            if sig is not None:
-                params = sig.parameters
-                has_var_kw = any(p.kind == Parameter.VAR_KEYWORD for p in params.values())
-                for candidate in ("query_params", "params"):
-                    if candidate in params:
-                        options_kwargs = {candidate: search_params}
-                        break
-                if options_kwargs is None and has_var_kw:
-                    options_kwargs = {"query_params": search_params}
-            if options_kwargs is None:
-                for candidate in ("query_params", "params"):
-                    try:
-                        options_client = options(**{candidate: search_params})
-                        break
-                    except TypeError:
-                        options_client = None
-            else:
-                try:
-                    options_client = options(**options_kwargs)
-                except TypeError:
-                    options_client = None
-            if options_client is not None:
-                resp = options_client.search(**search_kwargs)
-            else:
-                resp = es.search(params=search_params, **search_kwargs)
-        else:
-            resp = es.search(params=search_params, **search_kwargs)
     except NotFoundError:
         return "<em>索引尚未建立，请先同步文档</em>"
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
