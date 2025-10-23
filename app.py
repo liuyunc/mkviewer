@@ -315,14 +315,29 @@ def _es_search_request(
                 options_client = None
         if options_client is not None:
             try:
+                if search_params:
+                    return options_client.search(params=search_params, **search_kwargs)
                 return options_client.search(**search_kwargs)
-            except TypeError:
-                pass
+            except TypeError as exc:
+                if search_params and "params" in str(exc):
+                    try:
+                        return options_client.search(query_params=search_params, **search_kwargs)
+                    except TypeError:
+                        pass
+                else:
+                    pass
 
     try:
-        return es.search(params=search_params, **search_kwargs)
-    except TypeError:
-        return es.search(query_params=search_params, **search_kwargs)
+        if search_params:
+            return es.search(params=search_params, **search_kwargs)
+        return es.search(**search_kwargs)
+    except TypeError as exc:
+        if search_params and "params" in str(exc):
+            try:
+                return es.search(query_params=search_params, **search_kwargs)
+            except TypeError:
+                pass
+        raise
 
 # ==================== 图片链接重写 ====================
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
