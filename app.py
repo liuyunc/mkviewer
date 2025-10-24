@@ -47,6 +47,10 @@ IMAGE_PUBLIC_BASE = os.getenv("IMAGE_PUBLIC_BASE", "http://10.20.41.24:9005")
 SITE_TITLE = os.getenv("SITE_TITLE", "通号院文档知识库")
 BIND_HOST = os.getenv("BIND_HOST", "0.0.0.0")
 BIND_PORT = int(os.getenv("BIND_PORT", "7861"))
+MATHJAX_JS_URL = os.getenv(
+    "MATHJAX_JS_URL",
+    "http://10.20.41.24:9005/cdn/mathjax@3/es5/tex-mml-chtml.js",
+)
 ES_HOSTS = [h.strip() for h in os.getenv("ES_HOSTS", "http://localhost:9200").split(",") if h.strip()]
 ES_INDEX = os.getenv("ES_INDEX", "mkviewer-docs")
 ES_USERNAME = os.getenv("ES_USERNAME", "")
@@ -62,23 +66,25 @@ if ES_MAX_ANALYZED_OFFSET <= 0:
 
 ES_ENABLED = bool(ES_HOSTS)
 
-# Inject MathJax once at the document head so the preview pane can render LaTeX
-# fragments coming from Markdown/Word conversions.  A MutationObserver re-runs the
-# typesetter whenever the preview HTML changes.
-MATHJAX_HEAD = """
+# Inject MathJax and a resilient typesetting helper so formulas render even when
+# the initial HTML update happens before the MathJax bundle is ready.  The
+# helper uses MutationObserver as well as a retry timer to ensure the preview is
+# re-typeset once the script finishes downloading.
+_MATHJAX_HEAD_TEMPLATE = """
 <script>
 (function () {
-    window.MathJax = window.MathJax || {};
-    window.MathJax.tex = window.MathJax.tex || {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]};
-    window.MathJax.svg = window.MathJax.svg || {fontCache: 'global'};
-    var startup = window.MathJax.startup || {};
-    if (!Object.prototype.hasOwnProperty.call(startup, 'typeset')) {
-        startup.typeset = false;
-    }
-    window.MathJax.startup = startup;
+    var config = window.MathJax = window.MathJax || {};
+    config.tex = config.tex || {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']]
+    };
+    config.svg = config.svg || {fontCache: 'global'};
+    var startup = config.startup || {};
+    startup.typeset = false;
+    config.startup = startup;
 })();
 </script>
-<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<script defer src="__MATHJAX_SRC__"></script>
 <script>
 (function () {
     var targetId = 'doc-html-view';
@@ -86,20 +92,23 @@ MATHJAX_HEAD = """
     var scheduled = false;
     var raf = window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); };
     var targetNode = null;
+    var retryTimer = null;
 
-    function startWatching() {
-        if (!window.MutationObserver || !targetNode) {
-            scheduled = false;
-            return;
-        }
+    function disconnectObserver() {
         if (observer) {
             observer.disconnect();
         }
+    }
+
+    function startWatching() {
+        if (!window.MutationObserver || !targetNode) {
+            return;
+        }
+        disconnectObserver();
         observer = new MutationObserver(function () {
             schedule();
         });
         observer.observe(targetNode, {childList: true, subtree: true});
-        scheduled = false;
     }
 
     function runTypeset() {
@@ -108,12 +117,13 @@ MATHJAX_HEAD = """
             return;
         }
         if (!(window.MathJax && window.MathJax.typesetPromise)) {
-            startWatching();
+            if (retryTimer) {
+                clearTimeout(retryTimer);
+            }
+            retryTimer = setTimeout(runTypeset, 200);
             return;
         }
-        if (observer) {
-            observer.disconnect();
-        }
+        disconnectObserver();
         var promise;
         try {
             promise = window.MathJax.typesetPromise([targetNode]);
@@ -121,9 +131,7 @@ MATHJAX_HEAD = """
             promise = null;
         }
         if (promise && promise.then) {
-            promise.then(function () {
-                startWatching();
-            }, function () {
+            promise.finally(function () {
                 startWatching();
             });
         } else {
@@ -136,38 +144,117 @@ MATHJAX_HEAD = """
             return;
         }
         scheduled = true;
-        raf(function () {
-            runTypeset();
-        });
+        raf(runTypeset);
     }
 
-    function ensureObserver() {
+    function ensureTarget() {
         targetNode = document.getElementById(targetId);
         if (!targetNode) {
-            raf(ensureObserver);
-            return;
-        }
-        window._mkviewerTypeset = function () {
-            runTypeset();
-        };
-        if (!window.MutationObserver) {
-            runTypeset();
+            raf(ensureTarget);
             return;
         }
         startWatching();
-        runTypeset();
+        schedule();
     }
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', ensureObserver);
+        document.addEventListener('DOMContentLoaded', ensureTarget);
     } else {
-        ensureObserver();
+        ensureTarget();
     }
+
+    if (window.MathJax) {
+        var startup = window.MathJax.startup = window.MathJax.startup || {};
+        var previousReady = typeof startup.ready === 'function' ? startup.ready : null;
+        startup.ready = function () {
+            var result = null;
+            if (previousReady) {
+                try {
+                    result = previousReady.apply(this, arguments);
+                } catch (err) {
+                    result = null;
+                }
+            } else if (typeof startup.defaultReady === 'function') {
+                try {
+                    result = startup.defaultReady();
+                } catch (err) {
+                    result = null;
+                }
+            }
+
+            if (result && typeof result.then === 'function') {
+                if (typeof result.finally === 'function') {
+                    return result.finally(schedule);
+                }
+                return result.then(function (value) {
+                    schedule();
+                    return value;
+                }, function (reason) {
+                    schedule();
+                    throw reason;
+                });
+            }
+
+            schedule();
+            return result;
+        };
+    }
+
+    setTimeout(function () {
+        if (!(window.MathJax && window.MathJax.typesetPromise)) {
+            console.warn('[mkviewer] MathJax 脚本尚未加载，若长时间无响应，请配置 MATHJAX_JS_URL 以使用内网镜像。');
+        }
+    }, 6000);
 })();
 </script>
 """
 
-MATHJAX_TRIGGER_SNIPPET = "<script>window._mkviewerTypeset && window._mkviewerTypeset();</script>"
+MATHJAX_HEAD = _MATHJAX_HEAD_TEMPLATE.replace("__MATHJAX_SRC__", MATHJAX_JS_URL)
+
+LAYOUT_FALLBACK_HEAD = """
+<style>
+/* Minimal layout helpers that load with the page head to avoid flash-of-column
+   issues when the main stylesheet is still downloading. */
+body {
+    margin: 0;
+    font-family: "PingFang SC","Microsoft YaHei","Source Han Sans SC","Helvetica Neue",Arial,sans-serif;
+}
+.gradio-container {
+    max-width: 1560px;
+    margin: 0 auto;
+    padding: 16px 32px 40px;
+}
+.gradio-container .gr-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 24px;
+}
+.sidebar-col {
+    flex: 0 0 300px;
+    max-width: 360px;
+    width: 100%;
+}
+.content-col {
+    flex: 1 1 640px;
+    min-width: 0;
+    width: 100%;
+}
+@media (max-width: 860px) {
+    .gradio-container {
+        padding: 10px 14px 32px;
+    }
+    .gradio-container .gr-row {
+        flex-direction: column;
+    }
+    .sidebar-col,
+    .content-col {
+        max-width: none;
+        flex: 1 1 auto;
+    }
+}
+</style>
+"""
 
 # ==================== MinIO 连接 ====================
 _client = None
@@ -644,9 +731,8 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     else:  # pragma: no cover - 理论上不会走到
         raise RuntimeError(f"未知文档类型：{doc_type}")
 
-    html_with_mathjax = html + MATHJAX_TRIGGER_SNIPPET
-    DOC_CACHE.set(key, (etag, doc_type, text, html_with_mathjax, toc_html))
-    return etag, doc_type, text, html_with_mathjax, toc_html
+    DOC_CACHE.set(key, (etag, doc_type, text, html, toc_html))
+    return etag, doc_type, text, html, toc_html
 
 # ==================== 目录树 ====================
 
@@ -964,10 +1050,16 @@ body {
     margin-left:12px;
 }
 .gr-row {
+    display:flex;
+    flex-wrap:wrap;
+    align-items:flex-start;
     gap:24px !important;
 }
 .sidebar-col {
     font-size:.92rem;
+    flex:0 0 304px;
+    max-width:368px;
+    width:100%;
 }
 .sidebar-col .controls {
     display:flex;
@@ -996,6 +1088,11 @@ body {
     flex-direction:column;
     gap:14px;
     align-self:flex-start;
+}
+.content-col {
+    flex:1 1 640px;
+    min-width:0;
+    width:100%;
 }
 .sidebar-tree {
     padding:16px 18px;
@@ -1423,7 +1520,7 @@ def ui_app():
     with gr.Blocks(
         title=SITE_TITLE,
         theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate"),
-        head=MATHJAX_HEAD,
+        head=MATHJAX_HEAD + LAYOUT_FALLBACK_HEAD,
     ) as demo:
         gr.HTML(GLOBAL_CSS + TREE_CSS)
         hero_html = gr.HTML(_hero_html())
