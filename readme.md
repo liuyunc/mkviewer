@@ -117,6 +117,7 @@ docker run -d \
 - **图片无法展示**：检查 `IMAGE_PUBLIC_BASE` 是否能够公网/内网访问，或 Markdown 中是否使用了非图片资源。
 - **搜索无结果**：确认文档后缀是否为 `.md`/`.docx`/`.doc`，并确保已执行索引同步或 Elasticsearch 运行正常。
 - **DOC/DOCX 预览失败**：请确认运行环境已安装 `mammoth` 与 `textract`，其中 `textract` 需要系统依赖 `antiword`（Docker 镜像已预装）。
+- **Chrome 打开 MathJax 文件后如何下载**：在打开的脚本页面中按 `Ctrl + S`（macOS 为 `Cmd + S`）或使用右上角菜单中的 **更多工具 → 保存页面为…**，将文件格式选择为“仅网页，*.js”。保存后将其上传至 `http://10.20.41.24:9005/cdn/` 对应的目录（保持原始的 `mathjax@3/es5/tex-mml-chtml.js` 路径）即可实现本地加速访问。
 
 ## License
 
