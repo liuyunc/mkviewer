@@ -220,35 +220,42 @@ body {
     font-family: "PingFang SC","Microsoft YaHei","Source Han Sans SC","Helvetica Neue",Arial,sans-serif;
 }
 .gradio-container {
-    max-width: 1560px;
+    max-width: 1880px;
+    width: 100%;
     margin: 0 auto;
-    padding: 16px 32px 40px;
+    padding: 16px 16px 40px;
 }
 .gradio-container .gr-row {
     display: flex;
+    flex-direction: row !important;
     flex-wrap: wrap;
     align-items: flex-start;
-    gap: 24px;
+    gap: 20px;
 }
-.sidebar-col {
+#layout-main {
+    flex-wrap: nowrap;
+    align-items: flex-start;
+}
+#layout-main > .sidebar-col {
     flex: 0 0 300px;
     max-width: 360px;
-    width: 100%;
 }
-.content-col {
-    flex: 1 1 640px;
+#layout-main > .content-col {
+    flex: 1 1 auto;
     min-width: 0;
-    width: 100%;
 }
-@media (max-width: 860px) {
+@media (max-width: 768px) {
     .gradio-container {
         padding: 10px 14px 32px;
     }
     .gradio-container .gr-row {
-        flex-direction: column;
+        flex-direction: column !important;
     }
-    .sidebar-col,
-    .content-col {
+    #layout-main {
+        flex-wrap: wrap;
+    }
+    #layout-main > .sidebar-col,
+    #layout-main > .content-col {
         max-width: none;
         flex: 1 1 auto;
     }
@@ -900,9 +907,10 @@ body {
 }
 .gradio-container {
     background:transparent !important;
-    max-width:1560px;
+    max-width:1880px;
+    width:100%;
     margin:0 auto;
-    padding:16px 40px 56px;
+    padding:16px 20px 56px;
 }
 .gradio-container .block.padded {
     background:transparent;
@@ -1051,15 +1059,25 @@ body {
 }
 .gr-row {
     display:flex;
+    flex-direction:row !important;
     flex-wrap:wrap;
     align-items:flex-start;
-    gap:24px !important;
+    gap:20px !important;
+}
+#layout-main {
+    flex-wrap:nowrap;
+    align-items:flex-start;
+}
+#layout-main > .sidebar-col {
+    flex:0 0 304px;
+    max-width:368px;
+}
+#layout-main > .content-col {
+    flex:1 1 auto;
+    min-width:0;
 }
 .sidebar-col {
     font-size:.92rem;
-    flex:0 0 304px;
-    max-width:368px;
-    width:100%;
 }
 .sidebar-col .controls {
     display:flex;
@@ -1092,7 +1110,6 @@ body {
 .content-col {
     flex:1 1 640px;
     min-width:0;
-    width:100%;
 }
 .sidebar-tree {
     padding:16px 18px;
@@ -1358,9 +1375,15 @@ body {
     .toc-col { position:static; }
     .toc-card { max-height:unset; }
 }
-@media (max-width:860px) {
+@media (max-width:768px) {
     .gradio-container { padding:10px 12px 32px; }
-    .gr-row { flex-direction:column; }
+    .gr-row { flex-direction:column !important; }
+    #layout-main { flex-wrap:wrap; }
+    #layout-main > .sidebar-col,
+    #layout-main > .content-col {
+        max-width:none;
+        flex:1 1 auto;
+    }
 }
 </style>
 """
@@ -1524,7 +1547,7 @@ def ui_app():
     ) as demo:
         gr.HTML(GLOBAL_CSS + TREE_CSS)
         hero_html = gr.HTML(_hero_html())
-        with gr.Row(elem_classes=["gr-row"]):
+        with gr.Row(elem_classes=["gr-row"], elem_id="layout-main"):
             with gr.Column(scale=1, min_width=280, elem_classes=["sidebar-col"]):
                 with gr.Column(elem_classes=["sidebar-sticky"]):
                     gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
