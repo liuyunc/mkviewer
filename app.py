@@ -95,6 +95,17 @@ _MATHJAX_HEAD_TEMPLATE = """
             banner.textContent = 'MathJax 脚本加载失败，请检查 MATHJAX_JS_URL 设置或镜像文件。';
             container.insertBefore(banner, container.firstChild || null);
         }
+        if (!options.skipHtmlTags) {
+            options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
+        }
+        if (!options.processHtmlClass) {
+            options.processHtmlClass = 'arithmatex|doc-preview-inner';
+        }
+        var cfg = win.MathJax = win.MathJax || {};
+        var tex = cfg.tex = cfg.tex || {};
+        tex.inlineMath = tex.inlineMath || [['$', '$'], ['\\(', '\\)']];
+        tex.displayMath = tex.displayMath || [['$$', '$$'], ['\\[', '\\]']];
+        cfg.svg = cfg.svg || {fontCache: 'global'};
     }
 
     function getHost() {
