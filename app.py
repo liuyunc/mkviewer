@@ -771,9 +771,9 @@ body {
 }
 .gradio-container {
     background:transparent !important;
-    max-width:1320px;
+    max-width:1560px;
     margin:0 auto;
-    padding:12px 32px 48px;
+    padding:16px 40px 56px;
 }
 .gradio-container .block.padded {
     background:transparent;
@@ -920,6 +920,9 @@ body {
 .gr-row {
     gap:24px !important;
 }
+.sidebar-col {
+    font-size:.92rem;
+}
 .sidebar-col .controls {
     display:flex;
     gap:10px;
@@ -933,7 +936,7 @@ body {
 }
 .sidebar-col .gr-button { min-width:104px; }
 .sidebar-col .status-bar {
-    margin:4px 0 8px;
+    margin:6px 0 0;
     color:var(--brand-muted);
     font-size:.9rem;
 }
@@ -947,13 +950,17 @@ body {
     align-self:flex-start;
 }
 .sidebar-tree {
-    padding:18px 20px;
+    padding:16px 18px;
     background:var(--brand-card);
     border-radius:var(--brand-radius);
     border:1px solid var(--brand-border);
     box-shadow:var(--brand-shadow);
     max-height:60vh;
     overflow:auto;
+}
+.sidebar-tree summary,
+.sidebar-tree .file {
+    font-size:.9rem;
 }
 .sidebar-tree::-webkit-scrollbar { width:8px; }
 .sidebar-tree::-webkit-scrollbar-thumb {
@@ -993,13 +1000,14 @@ body {
     border:1px solid var(--brand-border) !important;
     background:#f8fbff !important;
     padding:10px 16px !important;
-    font-size:.95rem !important;
+    font-size:.9rem !important;
     box-shadow:none !important;
 }
 .search-title {
     font-weight:600;
     color:var(--brand-muted);
-    margin:12px 0 6px;
+    margin:6px 0 4px;
+    font-size:.88rem;
     letter-spacing:.02em;
 }
 .search-stack {
@@ -1011,6 +1019,16 @@ body {
     width:100%;
     border-radius:16px !important;
     padding:10px 0 !important;
+}
+.reindex-stack {
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+    margin-top:8px;
+}
+.reindex-stack .gr-button {
+    align-self:flex-start;
+    min-width:130px;
 }
 .content-col {
     display:flex;
@@ -1362,7 +1380,7 @@ def ui_app():
         gr.HTML(GLOBAL_CSS + TREE_CSS)
         hero_html = gr.HTML(_hero_html())
         with gr.Row(elem_classes=["gr-row"]):
-            with gr.Column(scale=1, min_width=340, elem_classes=["sidebar-col"]):
+            with gr.Column(scale=1, min_width=280, elem_classes=["sidebar-col"]):
                 with gr.Column(elem_classes=["sidebar-sticky"]):
                     gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
                     with gr.Row(elem_classes=["controls"]):
@@ -1370,9 +1388,6 @@ def ui_app():
                         btn_expand = gr.Button("展开全部")
                         btn_collapse = gr.Button("折叠全部")
                         btn_clear = gr.Button("清空缓存")
-                        btn_reindex = gr.Button("重建索引", variant="secondary")
-                    status_bar = gr.HTML("", elem_classes=["status-bar"])
-                    tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
                     gr.HTML("<div class='search-title'>全文搜索</div>", elem_classes=["search-title"])
                     with gr.Column(elem_classes=["search-stack"]):
                         q = gr.Textbox(
@@ -1381,7 +1396,11 @@ def ui_app():
                             elem_classes=["search-input"],
                         )
                         btn_search = gr.Button("搜索", elem_classes=["search-button"])
-            with gr.Column(scale=5, elem_classes=["content-col"]):
+                    tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
+                    with gr.Column(elem_classes=["reindex-stack"]):
+                        btn_reindex = gr.Button("重建索引", variant="secondary")
+                        status_bar = gr.HTML("", elem_classes=["status-bar"])
+            with gr.Column(scale=7, elem_classes=["content-col"]):
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
                     with gr.TabItem("目录", id="toc"):
                         toc_panel = gr.HTML(
