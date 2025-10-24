@@ -562,8 +562,8 @@ MARKDOWN_EXTENSION_CONFIGS = {
     "toc": {"permalink": False},
     "pymdownx.arithmatex": {
         "generic": True,
-        "tex_inline_wrap": ["\\(", "\\)"],
-        "tex_block_wrap": ["\\[", "\\]"],
+        "tex_inline_wrap": [r"\(", r"\)"],
+        "tex_block_wrap": [r"\[", r"\]"],
     },
 }
 #IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
