@@ -73,69 +73,205 @@ ES_ENABLED = bool(ES_HOSTS)
 _MATHJAX_HEAD_TEMPLATE = """
 <script>
 (function () {
-    var config = window.MathJax = window.MathJax || {};
-    config.tex = config.tex || {
-        inlineMath: [['$', '$'], ['\\(', '\\)']],
-        displayMath: [['$$', '$$'], ['\\[', '\\]']]
-    };
-    config.svg = config.svg || {fontCache: 'global'};
-    var startup = config.startup || {};
-    startup.typeset = false;
-    config.startup = startup;
+    function setupMathJaxConfig(targetWindow) {
+        if (!targetWindow) {
+            return;
+        }
+        targetWindow.__mkvSetupMathJaxConfig = setupMathJaxConfig;
+        var config = targetWindow.MathJax = targetWindow.MathJax || {};
+        config.tex = config.tex || {
+            inlineMath: [['$', '$'], ['\\(', '\\)']],
+            displayMath: [['$$', '$$'], ['\\[', '\\]']]
+        };
+        config.svg = config.svg || {fontCache: 'global'};
+        var startup = config.startup || {};
+        startup.typeset = false;
+        config.startup = startup;
+    }
+
+    setupMathJaxConfig(window);
+    window.__mkvSetupMathJaxConfig = setupMathJaxConfig;
 })();
 </script>
-<script defer src="__MATHJAX_SRC__"></script>
+<script id="mkv-mathjax-loader" defer src="__MATHJAX_SRC__"></script>
 <script>
 (function () {
     var targetId = 'doc-html-view';
-    var observer = null;
-    var scheduled = false;
     var raf = window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); };
-    var targetNode = null;
+    var scheduled = false;
+    var contentNode = null;
+    var observer = null;
+    var containerObserver = null;
+    var iframeNode = null;
     var retryTimer = null;
 
-    function disconnectObserver() {
-        if (observer) {
-            observer.disconnect();
+    function disconnect(obs) {
+        if (obs) {
+            obs.disconnect();
         }
     }
 
-    function startWatching() {
-        if (!window.MutationObserver || !targetNode) {
+    function getSetupFn(win) {
+        if (win && typeof win.__mkvSetupMathJaxConfig === 'function') {
+            return win.__mkvSetupMathJaxConfig;
+        }
+        if (typeof window.__mkvSetupMathJaxConfig === 'function') {
+            return window.__mkvSetupMathJaxConfig;
+        }
+        return null;
+    }
+
+    function ensureMathForDocument(doc) {
+        if (!doc) {
             return;
         }
-        disconnectObserver();
+        var win = doc.defaultView || doc.parentWindow || window;
+        var setupFn = getSetupFn(win);
+        if (typeof setupFn === 'function') {
+            try {
+                setupFn(win);
+            } catch (err) {
+                // ignore setup failures for now
+            }
+        }
+        var head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
+        if (!head) {
+            return;
+        }
+        if (!doc.getElementById('mkv-mathjax-loader')) {
+            var loader = doc.createElement('script');
+            loader.id = 'mkv-mathjax-loader';
+            loader.setAttribute('defer', 'defer');
+            loader.src = '__MATHJAX_SRC__';
+            head.appendChild(loader);
+        }
+    }
+
+    function observeContent() {
+        if (!(window.MutationObserver && contentNode)) {
+            return;
+        }
+        disconnect(observer);
         observer = new MutationObserver(function () {
             schedule();
         });
-        observer.observe(targetNode, {childList: true, subtree: true});
+        observer.observe(contentNode, {childList: true, subtree: true});
+    }
+
+    function observeContainer(container) {
+        if (!(window.MutationObserver && container)) {
+            return;
+        }
+        disconnect(containerObserver);
+        containerObserver = new MutationObserver(function () {
+            raf(resolveTarget);
+        });
+        containerObserver.observe(container, {childList: true, subtree: true});
+    }
+
+    function setContentNode(node) {
+        if (contentNode === node) {
+            return;
+        }
+        if (!node) {
+            disconnect(observer);
+            contentNode = null;
+            return;
+        }
+        contentNode = node;
+        ensureMathForDocument(node.ownerDocument || document);
+        observeContent();
+        schedule();
+    }
+
+    function onIframeLoad() {
+        if (!iframeNode) {
+            return;
+        }
+        var doc = null;
+        try {
+            doc = iframeNode.contentDocument || iframeNode.contentWindow.document;
+        } catch (err) {
+            doc = null;
+        }
+        if (!doc || !doc.body) {
+            raf(onIframeLoad);
+            return;
+        }
+        ensureMathForDocument(doc);
+        setContentNode(doc.body);
+    }
+
+    function handleIframe(iframe) {
+        if (iframeNode && iframeNode !== iframe) {
+            iframeNode.removeEventListener('load', onIframeLoad);
+        }
+        iframeNode = iframe || null;
+        if (iframeNode) {
+            iframeNode.addEventListener('load', onIframeLoad);
+        }
+        onIframeLoad();
+    }
+
+    function resolveTarget() {
+        var host = document.getElementById(targetId);
+        if (!host) {
+            setContentNode(null);
+            iframeNode = null;
+            raf(resolveTarget);
+            return;
+        }
+        observeContainer(host);
+        var tag = (host.tagName || '').toLowerCase();
+        if (tag === 'iframe') {
+            handleIframe(host);
+            return;
+        }
+        var iframe = host.querySelector ? host.querySelector('iframe') : null;
+        if (iframe) {
+            handleIframe(iframe);
+            return;
+        }
+        handleIframe(null);
+        setContentNode(host);
+    }
+
+    function getMathJaxFor(node) {
+        var doc = node && (node.ownerDocument || document);
+        var win = doc && (doc.defaultView || doc.parentWindow);
+        if (win && win.MathJax) {
+            return win.MathJax;
+        }
+        return window.MathJax;
     }
 
     function runTypeset() {
         scheduled = false;
-        if (!targetNode) {
+        if (!contentNode) {
             return;
         }
-        if (!(window.MathJax && window.MathJax.typesetPromise)) {
+        var math = getMathJaxFor(contentNode);
+        if (!(math && math.typesetPromise)) {
+            ensureMathForDocument(contentNode.ownerDocument || document);
             if (retryTimer) {
                 clearTimeout(retryTimer);
             }
             retryTimer = setTimeout(runTypeset, 200);
             return;
         }
-        disconnectObserver();
-        var promise;
+        disconnect(observer);
+        var promise = null;
         try {
-            promise = window.MathJax.typesetPromise([targetNode]);
+            promise = math.typesetPromise([contentNode]);
         } catch (err) {
             promise = null;
         }
-        if (promise && promise.then) {
+        if (promise && typeof promise.then === 'function') {
             promise.finally(function () {
-                startWatching();
+                observeContent();
             });
         } else {
-            startWatching();
+            observeContent();
         }
     }
 
@@ -147,24 +283,15 @@ _MATHJAX_HEAD_TEMPLATE = """
         raf(runTypeset);
     }
 
-    function ensureTarget() {
-        targetNode = document.getElementById(targetId);
-        if (!targetNode) {
-            raf(ensureTarget);
-            return;
-        }
-        startWatching();
-        schedule();
-    }
-
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', ensureTarget);
+        document.addEventListener('DOMContentLoaded', resolveTarget);
     } else {
-        ensureTarget();
+        resolveTarget();
     }
 
-    if (window.MathJax) {
-        var startup = window.MathJax.startup = window.MathJax.startup || {};
+    var rootMath = window.MathJax;
+    if (rootMath) {
+        var startup = rootMath.startup = rootMath.startup || {};
         var previousReady = typeof startup.ready === 'function' ? startup.ready : null;
         startup.ready = function () {
             var result = null;
@@ -201,7 +328,8 @@ _MATHJAX_HEAD_TEMPLATE = """
     }
 
     setTimeout(function () {
-        if (!(window.MathJax && window.MathJax.typesetPromise)) {
+        var math = getMathJaxFor(contentNode);
+        if (!(math && math.typesetPromise)) {
             console.warn('[mkviewer] MathJax 脚本尚未加载，若长时间无响应，请配置 MATHJAX_JS_URL 以使用内网镜像。');
         }
     }, 6000);
@@ -1612,7 +1740,11 @@ def ui_app():
                         )
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
-                        html_view = gr.HTML("<em>请选择左侧文件…</em>", elem_id="doc-html-view", elem_classes=["doc-preview"])
+                        html_view = gr.Markdown(
+                            "<div class='doc-preview'><em>请选择左侧文件…</em></div>",
+                            elem_id="doc-html-view",
+                            elem_classes=["doc-preview"],
+                        )
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
                     with gr.TabItem("全文搜索", id="search"):
