@@ -240,7 +240,7 @@ body {
     min-width: 0;
     width: 100%;
 }
-@media (max-width: 860px) {
+@media (max-width: 768px) {
     .gradio-container {
         padding: 10px 14px 32px;
     }
@@ -1358,7 +1358,7 @@ body {
     .toc-col { position:static; }
     .toc-card { max-height:unset; }
 }
-@media (max-width:860px) {
+@media (max-width:768px) {
     .gradio-container { padding:10px 12px 32px; }
     .gr-row { flex-direction:column; }
 }
