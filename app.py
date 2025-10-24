@@ -8,6 +8,8 @@ from functools import lru_cache
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
+import urllib.error
+import urllib.request
 
 import gradio as gr
 from markdown import Markdown
@@ -51,6 +53,7 @@ MATHJAX_JS_URL = os.getenv(
     "MATHJAX_JS_URL",
     "http://10.20.41.24:9005/cdn/mathjax@3/es5/tex-mml-chtml.js",
 )
+ENABLE_GRADIO_QUEUE = os.getenv("ENABLE_GRADIO_QUEUE", "false").strip().lower() == "true"
 ES_HOSTS = [h.strip() for h in os.getenv("ES_HOSTS", "http://localhost:9200").split(",") if h.strip()]
 ES_INDEX = os.getenv("ES_INDEX", "mkviewer-docs")
 ES_USERNAME = os.getenv("ES_USERNAME", "")
@@ -66,145 +69,295 @@ if ES_MAX_ANALYZED_OFFSET <= 0:
 
 ES_ENABLED = bool(ES_HOSTS)
 
-# Inject MathJax and a resilient typesetting helper so formulas render even when
-# the initial HTML update happens before the MathJax bundle is ready.  The
-# helper uses MutationObserver as well as a retry timer to ensure the preview is
-# re-typeset once the script finishes downloading.
+# Inject MathJax with a focused bootstrap that waits for the library to finish
+# loading before typesetting, observes preview updates, and surfaces a clear
+# error banner when the locally hosted script is unavailable.
 _MATHJAX_HEAD_TEMPLATE = """
 <script>
 (function () {
-    var config = window.MathJax = window.MathJax || {};
-    config.tex = config.tex || {
-        inlineMath: [['$', '$'], ['\\(', '\\)']],
-        displayMath: [['$$', '$$'], ['\\[', '\\]']]
-    };
-    config.svg = config.svg || {fontCache: 'global'};
-    var startup = config.startup || {};
-    startup.typeset = false;
-    config.startup = startup;
-})();
-</script>
-<script defer src="__MATHJAX_SRC__"></script>
-<script>
-(function () {
-    var targetId = 'doc-html-view';
+    var SCRIPT_ID = 'mkv-mathjax-script';
+    var PREVIEW_ID = 'doc-html-view';
+    var SRC = '__MATHJAX_SRC__';
     var observer = null;
-    var scheduled = false;
-    var raf = window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); };
-    var targetNode = null;
-    var retryTimer = null;
+    var observedHost = null;
+    var ready = false;
+    var pending = false;
+    var needsTypeset = true;
+    var statusBanner = null;
+    var statusShown = false;
+    var pendingStatus = null;
 
-    function disconnectObserver() {
+    function describeError(err) {
+        if (!err) {
+            return '未知错误';
+        }
+        if (typeof err === 'string') {
+            return err;
+        }
+        if (err.message) {
+            return err.message;
+        }
+        try {
+            return err.toString();
+        } catch (e) {
+            return '未知错误';
+        }
+    }
+
+    function updateStatus(kind, message) {
+        var container = document.getElementById(PREVIEW_ID);
+        if (!container) {
+            pendingStatus = {kind: kind, message: message};
+            return;
+        }
+        pendingStatus = null;
+        var legacy = container.querySelector('.mathjax-error-banner');
+        if (legacy && legacy.parentNode) {
+            legacy.parentNode.removeChild(legacy);
+        }
+        var banner = container.querySelector('.mathjax-status-banner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.className = 'mathjax-status-banner';
+            container.insertBefore(banner, container.firstChild || null);
+        }
+        banner.setAttribute('data-kind', kind);
+        banner.textContent = message;
+        statusBanner = banner;
+    }
+
+    function showFailure(err) {
+        console.error('[mkviewer] MathJax 脚本加载失败：' + SRC, err);
+        statusShown = false;
+        updateStatus('error', 'MathJax 脚本加载失败，请检查 MATHJAX_JS_URL 设置或镜像文件。错误：' + describeError(err));
+    }
+
+    function successMessage() {
+        var version = '';
+        if (window.MathJax && window.MathJax.version) {
+            version = window.MathJax.version;
+        }
+        var parts = ['MathJax 脚本已加载成功'];
+        if (version) {
+            parts[0] += '（v' + version + '）';
+        }
+        parts.push('来源：' + SRC);
+        parts.push('已准备渲染数学公式。');
+        return parts.join(' ');
+    }
+
+    function showSuccess() {
+        statusShown = true;
+        updateStatus('ok', successMessage());
+    }
+
+    function getHost() {
+        var host = document.getElementById(PREVIEW_ID);
+        if (host && typeof host.isConnected === 'boolean' && !host.isConnected) {
+            return null;
+        }
+        return host;
+    }
+
+    function typeset(target) {
+        var host = target || getHost();
+        if (!host) {
+            needsTypeset = true;
+            requestAnimationFrame(ensureHost);
+            return;
+        }
+        if (observedHost !== host) {
+            attachObserver(host);
+        }
+        if (!ready || !(window.MathJax && window.MathJax.typesetPromise)) {
+            needsTypeset = true;
+            return;
+        }
+        needsTypeset = false;
+        if (pending) {
+            return;
+        }
+        pending = true;
+        requestAnimationFrame(function () {
+            pending = false;
+            window.MathJax.typesetPromise([host]).catch(function (err) {
+                console.error('[mkviewer] MathJax 渲染失败', err);
+                statusShown = false;
+                updateStatus('error', 'MathJax 渲染失败：' + describeError(err));
+            });
+        });
+    }
+
+    function attachObserver(host) {
+        if (!host || !window.MutationObserver) {
+            return;
+        }
         if (observer) {
             observer.disconnect();
         }
-    }
-
-    function startWatching() {
-        if (!window.MutationObserver || !targetNode) {
-            return;
-        }
-        disconnectObserver();
-        observer = new MutationObserver(function () {
-            schedule();
+        observer = new MutationObserver(function (mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                if (mutations[i].type === 'childList') {
+                    typeset(host);
+                    break;
+                }
+            }
         });
-        observer.observe(targetNode, {childList: true, subtree: true});
+        observer.observe(host, {childList: true});
+        observedHost = host;
     }
 
-    function runTypeset() {
-        scheduled = false;
-        if (!targetNode) {
+    function ensureHost() {
+        var host = getHost();
+        if (!host) {
+            requestAnimationFrame(ensureHost);
             return;
         }
-        if (!(window.MathJax && window.MathJax.typesetPromise)) {
-            if (retryTimer) {
-                clearTimeout(retryTimer);
+        attachObserver(host);
+        if (pendingStatus) {
+            var next = pendingStatus;
+            pendingStatus = null;
+            updateStatus(next.kind, next.message);
+        }
+        if (needsTypeset) {
+            typeset(host);
+        }
+    }
+
+    function markReady() {
+        ready = true;
+        typeset();
+        showSuccess();
+    }
+
+    function configure(win) {
+        if (!win) {
+            return;
+        }
+        var cfg = win.MathJax = win.MathJax || {};
+        var tex = cfg.tex = cfg.tex || {};
+        var inlinePairs = tex.inlineMath ? tex.inlineMath.slice() : [];
+        var displayPairs = tex.displayMath ? tex.displayMath.slice() : [];
+        function ensurePair(pairs, left, right, prepend) {
+            for (var i = 0; i < pairs.length; i++) {
+                if (pairs[i][0] === left && pairs[i][1] === right) {
+                    return pairs;
+                }
             }
-            retryTimer = setTimeout(runTypeset, 200);
-            return;
+            if (prepend) {
+                pairs.unshift([left, right]);
+            } else {
+                pairs.push([left, right]);
+            }
+            return pairs;
         }
-        disconnectObserver();
-        var promise;
-        try {
-            promise = window.MathJax.typesetPromise([targetNode]);
-        } catch (err) {
-            promise = null;
+        inlinePairs = ensurePair(inlinePairs, '$', '$', true);
+        inlinePairs = ensurePair(inlinePairs, '\(', '\)', false);
+        displayPairs = ensurePair(displayPairs, '$$', '$$', true);
+        displayPairs = ensurePair(displayPairs, '\[', '\]', false);
+        tex.inlineMath = inlinePairs;
+        tex.displayMath = displayPairs;
+        tex.processEscapes = true;
+        tex.processEnvironments = true;
+        cfg.svg = cfg.svg || {fontCache: 'global'};
+        var options = cfg.options = cfg.options || {};
+        if (!options.ignoreHtmlClass) {
+            options.ignoreHtmlClass = 'tex2jax_ignore';
         }
-        if (promise && promise.then) {
-            promise.finally(function () {
-                startWatching();
-            });
+        var processClass = options.processHtmlClass || '';
+        var requiredClasses = ['doc-preview-inner', 'docx-preview', 'arithmatex'];
+        if (processClass) {
+            var seen = processClass.split('|');
+            for (var i = 0; i < requiredClasses.length; i++) {
+                if (seen.indexOf(requiredClasses[i]) === -1) {
+                    seen.push(requiredClasses[i]);
+                }
+            }
+            processClass = seen.join('|');
         } else {
-            startWatching();
+            processClass = requiredClasses.join('|');
         }
-    }
-
-    function schedule() {
-        if (scheduled) {
-            return;
+        options.processHtmlClass = processClass;
+        if (!options.skipHtmlTags) {
+            options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
         }
-        scheduled = true;
-        raf(runTypeset);
-    }
-
-    function ensureTarget() {
-        targetNode = document.getElementById(targetId);
-        if (!targetNode) {
-            raf(ensureTarget);
-            return;
-        }
-        startWatching();
-        schedule();
-    }
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', ensureTarget);
-    } else {
-        ensureTarget();
-    }
-
-    if (window.MathJax) {
-        var startup = window.MathJax.startup = window.MathJax.startup || {};
-        var previousReady = typeof startup.ready === 'function' ? startup.ready : null;
+        var startup = cfg.startup = cfg.startup || {};
+        startup.typeset = false;
+        var originalReady = typeof startup.ready === 'function' ? startup.ready : null;
         startup.ready = function () {
-            var result = null;
-            if (previousReady) {
+            if (this && this.startup && typeof this.startup.defaultReady === 'function') {
+                this.startup.defaultReady();
+            }
+            markReady();
+            if (originalReady) {
                 try {
-                    result = previousReady.apply(this, arguments);
+                    originalReady.apply(this, arguments);
                 } catch (err) {
-                    result = null;
-                }
-            } else if (typeof startup.defaultReady === 'function') {
-                try {
-                    result = startup.defaultReady();
-                } catch (err) {
-                    result = null;
+                    console.error('[mkviewer] MathJax 自定义启动回调失败', err);
                 }
             }
-
-            if (result && typeof result.then === 'function') {
-                if (typeof result.finally === 'function') {
-                    return result.finally(schedule);
-                }
-                return result.then(function (value) {
-                    schedule();
-                    return value;
-                }, function (reason) {
-                    schedule();
-                    throw reason;
-                });
-            }
-
-            schedule();
-            return result;
         };
     }
 
-    setTimeout(function () {
-        if (!(window.MathJax && window.MathJax.typesetPromise)) {
-            console.warn('[mkviewer] MathJax 脚本尚未加载，若长时间无响应，请配置 MATHJAX_JS_URL 以使用内网镜像。');
+    function loadScript(doc) {
+        var existing = doc.getElementById(SCRIPT_ID);
+        if (existing) {
+            if (existing.getAttribute('data-mkv-loaded') === '1') {
+                if (window.MathJax && window.MathJax.typesetPromise) {
+                    if (window.MathJax.startup && window.MathJax.startup.promise) {
+                        window.MathJax.startup.promise.then(function () {
+                            markReady();
+                        });
+                    } else {
+                        markReady();
+                    }
+                } else if (!window.MathJax) {
+                    showFailure(new Error('MathJax 未在窗口中暴露。'));
+                }
+            }
+            ensureHost();
+            return;
         }
-    }, 6000);
+        var head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
+        if (!head) {
+            showFailure(new Error('无法找到 <head> 元素以加载 MathJax'));
+            return;
+        }
+        var script = doc.createElement('script');
+        script.id = SCRIPT_ID;
+        script.src = SRC;
+        script.async = true;
+        script.addEventListener('error', function (err) {
+            showFailure(err);
+        });
+        script.addEventListener('load', function () {
+            script.setAttribute('data-mkv-loaded', '1');
+            if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+                window.MathJax.startup.promise.then(function () {
+                    markReady();
+                }).catch(function (err) {
+                    showFailure(err);
+                });
+            } else if (window.MathJax) {
+                markReady();
+            } else {
+                showFailure(new Error('MathJax 未在窗口中暴露。'));
+            }
+        });
+        head.appendChild(script);
+    }
+
+    function init() {
+        configure(window);
+        ensureHost();
+        loadScript(document);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
 })();
 </script>
 """
@@ -551,7 +704,21 @@ SUPPORTED_EXTS = {
     ".docx": "docx",
     ".doc": "doc",
 }
-MARKDOWN_EXTENSIONS = ["fenced_code", "tables", "codehilite", "toc"]
+MARKDOWN_EXTENSIONS = [
+    "fenced_code",
+    "tables",
+    "codehilite",
+    "toc",
+    "pymdownx.arithmatex",
+]
+MARKDOWN_EXTENSION_CONFIGS = {
+    "toc": {"permalink": False},
+    "pymdownx.arithmatex": {
+        "generic": True,
+        "tex_inline_wrap": [r"\(", r"\)"],
+        "tex_block_wrap": [r"\[", r"\]"],
+    },
+}
 #IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
 
 
@@ -668,9 +835,80 @@ def list_documents() -> List[Dict[str, str]]:
 
 def _plain_text_html(text: str) -> str:
     if not text.strip():
-        return "<div class='doc-preview'><em>文档为空</em></div>"
+        return "<div class='doc-preview-inner doc-preview-empty'><em>文档为空</em></div>"
     esc = _esc(text)
-    return "<div class='doc-preview'>" + esc.replace("\n", "<br>") + "</div>"
+    return "<div class='doc-preview-inner'>" + esc.replace("\n", "<br>") + "</div>"
+
+
+def _probe_mathjax_resource(url: str, timeout: float = 5.0):
+    """Attempt to reach the MathJax bundle and return response metadata."""
+    attempts: List[str] = []
+    for method in ("HEAD", "GET"):
+        req = urllib.request.Request(url, method=method)
+        req.add_header("User-Agent", "mkviewer/1.0 (+MathJax probe)")
+        if method == "GET":
+            req.add_header("Range", "bytes=0-2047")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # type: ignore[arg-type]
+                status = getattr(resp, "status", getattr(resp, "code", None))
+                headers = {k: v for k, v in resp.headers.items()}
+                data = b""
+                if method == "GET":
+                    data = resp.read(2048)
+            return method, status, headers, data, attempts
+        except Exception as exc:  # pragma: no cover - 网络状况不可预测
+            attempts.append(f"{method} 请求失败：{exc}")
+            continue
+    raise RuntimeError("; ".join(attempts) or "无法访问 MathJax 脚本")
+
+
+def check_mathjax_bundle() -> str:
+    """Return an HTML snippet describing whether the MathJax bundle is reachable."""
+    try:
+        method, status, headers, snippet, attempts = _probe_mathjax_resource(MATHJAX_JS_URL)
+    except Exception as exc:
+        reason = _esc(str(exc))
+        return (
+            "<div class='mathjax-check mathjax-check-error'>"
+            "<strong>MathJax 脚本不可访问。</strong>"
+            f"<div class='mathjax-check-details'><p>请求地址：{_esc(MATHJAX_JS_URL)}</p>"
+            f"<p>错误信息：{reason}</p></div>"
+            "</div>"
+        )
+
+    details: List[str] = []
+    details.append(f"<li>请求地址：{_esc(MATHJAX_JS_URL)}</li>")
+    if status is not None:
+        details.append(f"<li>HTTP 状态：{_esc(str(status))}</li>")
+    details.append(f"<li>请求方式：{_esc(method)}</li>")
+    if attempts:
+        first_error = _esc(attempts[0])
+        details.append(f"<li>其它尝试：{first_error}</li>")
+    content_type = headers.get("Content-Type")
+    if content_type:
+        details.append(f"<li>Content-Type：{_esc(content_type)}</li>")
+    content_length = headers.get("Content-Length")
+    if content_length:
+        details.append(f"<li>Content-Length：{_esc(content_length)}</li>")
+    content_range = headers.get("Content-Range")
+    if content_range:
+        details.append(f"<li>Content-Range：{_esc(content_range)}</li>")
+
+    snippet_text = ""
+    if snippet:
+        snippet_text = snippet.decode("utf-8", errors="replace")
+        found = "MathJax" in snippet_text
+        details.append(
+            f"<li>已读取前 {len(snippet)} 字节，包含“MathJax”关键字：{'是' if found else '否'}</li>"
+        )
+
+    list_html = "<ul>" + "".join(details) + "</ul>" if details else ""
+    return (
+        "<div class='mathjax-check mathjax-check-ok'>"
+        "<strong>MathJax 脚本可访问。</strong>"
+        f"<div class='mathjax-check-details'>{list_html}</div>"
+        "</div>"
+    )
 
 
 def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, str, str, str]:
@@ -696,10 +934,13 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     if doc_type == "markdown":
         text = data.decode("utf-8", errors="ignore")
         text2 = rewrite_image_links(text)
-        md_renderer = Markdown(extensions=MARKDOWN_EXTENSIONS, extension_configs={"toc": {"permalink": False}})
+        md_renderer = Markdown(
+            extensions=MARKDOWN_EXTENSIONS,
+            extension_configs=MARKDOWN_EXTENSION_CONFIGS,
+        )
         rendered = md_renderer.convert(text2)
         toc_html = _render_markdown_toc(getattr(md_renderer, "toc_tokens", []))
-        html = "<div class='markdown-body'>" + rendered + "</div>"
+        html = "<div class='doc-preview-inner markdown-body'>" + rendered + "</div>"
     elif doc_type == "docx":
         text, html = _docx_from_bytes(data)
     elif doc_type == "doc":
@@ -1287,13 +1528,80 @@ body {
     box-shadow:var(--brand-shadow);
 }
 .doc-preview {
-    padding:0;
+    padding:20px 22px;
     margin:0;
     line-height:1.72;
     font-size:1rem;
+    box-sizing:border-box;
 }
-.doc-preview #doc-html-view {
-    padding:20px 22px;
+.doc-preview-inner {
+    min-height:1rem;
+}
+.doc-preview-empty {
+    color:var(--brand-muted);
+}
+.mathjax-status-banner {
+    margin-bottom:16px;
+    padding:12px 16px;
+    border-radius:14px;
+    font-size:.95rem;
+    line-height:1.6;
+    border:1px solid rgba(148, 163, 184, 0.35);
+    background:rgba(148, 163, 184, 0.12);
+    color:#0f172a;
+}
+.mathjax-status-banner[data-kind="error"] {
+    background:rgba(220,38,38,0.12);
+    border-color:rgba(220,38,38,0.28);
+    color:#991b1b;
+}
+.mathjax-status-banner[data-kind="ok"] {
+    background:rgba(34,197,94,0.12);
+    border-color:rgba(34,197,94,0.28);
+    color:#166534;
+}
+.mathjax-tools {
+    display:flex;
+    align-items:stretch;
+    gap:12px;
+    margin-bottom:12px;
+}
+.mathjax-tools .gradio-button {
+    min-width:168px;
+}
+.mathjax-check-result {
+    flex:1;
+}
+.mathjax-check {
+    padding:12px 16px;
+    border-radius:14px;
+    border:1px solid var(--brand-border);
+    background:var(--brand-card);
+    box-shadow:var(--brand-shadow);
+    font-size:.95rem;
+    line-height:1.6;
+}
+.mathjax-check-ok {
+    background:rgba(34,197,94,0.12);
+    border-color:rgba(34,197,94,0.28);
+    color:#166534;
+}
+.mathjax-check-error {
+    background:rgba(220,38,38,0.12);
+    border-color:rgba(220,38,38,0.28);
+    color:#991b1b;
+}
+.mathjax-check-details {
+    margin-top:8px;
+    font-size:.9rem;
+    color:var(--brand-muted);
+}
+.mathjax-check-details ul {
+    margin:6px 0 0;
+    padding-left:22px;
+}
+.mathjax-check-details li {
+    margin-bottom:4px;
 }
 .plaintext-view textarea {
     min-height:420px !important;
@@ -1361,6 +1669,15 @@ body {
     padding-left:12px;
     color:var(--brand-muted);
 }
+.markdown-body .arithmatex {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"] {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"][display="true"] {
+    margin:1.2em 0 !important;
+}
 @media (max-width:1100px) {
     .gradio-container {
         padding:12px 18px 40px;
@@ -1404,6 +1721,15 @@ TREE_CSS = """
     margin-left:0;
     padding-left:12px;
     color:var(--brand-muted);
+}
+.markdown-body .arithmatex {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"] {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"][display="true"] {
+    margin:1.2em 0 !important;
 }
 </style>
 """
@@ -1576,8 +1902,18 @@ def ui_app():
                             elem_classes=["toc-card"],
                         )
                     with gr.TabItem("预览", id="preview"):
+                        with gr.Row(elem_classes=["mathjax-tools"]):
+                            btn_mathjax_check = gr.Button("验证 MathJax 脚本", variant="secondary")
+                            mathjax_status = gr.HTML(
+                                "<em>点击“验证 MathJax 脚本”以确认本地 MathJax 镜像是否可用。</em>",
+                                elem_classes=["mathjax-check-result"],
+                            )
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
-                        html_view = gr.HTML("<em>请选择左侧文件…</em>", elem_id="doc-html-view", elem_classes=["doc-preview"])
+                        html_view = gr.HTML(
+                            "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
+                            elem_id="doc-html-view",
+                            elem_classes=["doc-preview"],
+                        )
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
                     with gr.TabItem("全文搜索", id="search"):
@@ -1646,6 +1982,7 @@ def ui_app():
         btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_clear.click(_clear_cache, outputs=status_bar)
         btn_reindex.click(_force_reindex, outputs=status_bar)
+        btn_mathjax_check.click(lambda: check_mathjax_bundle(), outputs=mathjax_status)
 
         q.submit(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
         btn_search.click(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
@@ -1660,7 +1997,8 @@ def ui_app():
 
 if __name__ == "__main__":
     demo = ui_app()
-    demo = demo.queue()
+    if ENABLE_GRADIO_QUEUE:
+        demo = demo.queue()
     app = demo
     fastapi_app = demo.app
 
