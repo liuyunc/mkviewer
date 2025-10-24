@@ -73,262 +73,112 @@ ES_ENABLED = bool(ES_HOSTS)
 _MATHJAX_HEAD_TEMPLATE = """
 <script>
 (function () {
-    function setupMathJaxConfig(targetWindow) {
-        if (!targetWindow) {
+    var SCRIPT_ID = 'mkv-mathjax-loader';
+    var PREVIEW_ID = 'doc-html-view';
+    var SRC = '__MATHJAX_SRC__';
+    var timer = null;
+    var host = null;
+    var observer = null;
+
+    function configure(win) {
+        if (!win) {
             return;
         }
-        targetWindow.__mkvSetupMathJaxConfig = setupMathJaxConfig;
-        var config = targetWindow.MathJax = targetWindow.MathJax || {};
-        config.tex = config.tex || {
-            inlineMath: [['$', '$'], ['\\(', '\\)']],
-            displayMath: [['$$', '$$'], ['\\[', '\\]']]
-        };
-        config.svg = config.svg || {fontCache: 'global'};
-        var startup = config.startup || {};
-        startup.typeset = false;
-        config.startup = startup;
+        var cfg = win.MathJax = win.MathJax || {};
+        var tex = cfg.tex = cfg.tex || {};
+        tex.inlineMath = tex.inlineMath || [['$', '$'], ['\\(', '\\)']];
+        tex.displayMath = tex.displayMath || [['$$', '$$'], ['\\[', '\\]']];
+        cfg.svg = cfg.svg || {fontCache: 'global'};
     }
 
-    setupMathJaxConfig(window);
-    window.__mkvSetupMathJaxConfig = setupMathJaxConfig;
-})();
-</script>
-<script id="mkv-mathjax-loader" defer src="__MATHJAX_SRC__"></script>
-<script>
-(function () {
-    var targetId = 'doc-html-view';
-    var raf = window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); };
-    var scheduled = false;
-    var contentNode = null;
-    var observer = null;
-    var containerObserver = null;
-    var iframeNode = null;
-    var retryTimer = null;
-
-    function disconnect(obs) {
-        if (obs) {
-            obs.disconnect();
-        }
-    }
-
-    function getSetupFn(win) {
-        if (win && typeof win.__mkvSetupMathJaxConfig === 'function') {
-            return win.__mkvSetupMathJaxConfig;
-        }
-        if (typeof window.__mkvSetupMathJaxConfig === 'function') {
-            return window.__mkvSetupMathJaxConfig;
-        }
-        return null;
-    }
-
-    function ensureMathForDocument(doc) {
+    function ensureScript(doc) {
         if (!doc) {
             return;
         }
-        var win = doc.defaultView || doc.parentWindow || window;
-        var setupFn = getSetupFn(win);
-        if (typeof setupFn === 'function') {
-            try {
-                setupFn(win);
-            } catch (err) {
-                // ignore setup failures for now
-            }
+        if (doc.getElementById(SCRIPT_ID)) {
+            return;
         }
         var head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
         if (!head) {
             return;
         }
-        if (!doc.getElementById('mkv-mathjax-loader')) {
-            var loader = doc.createElement('script');
-            loader.id = 'mkv-mathjax-loader';
-            loader.setAttribute('defer', 'defer');
-            loader.src = '__MATHJAX_SRC__';
-            head.appendChild(loader);
-        }
+        var script = doc.createElement('script');
+        script.id = SCRIPT_ID;
+        script.setAttribute('defer', 'defer');
+        script.src = SRC;
+        head.appendChild(script);
     }
 
-    function observeContent() {
-        if (!(window.MutationObserver && contentNode)) {
+    function typeset(target) {
+        if (!target) {
             return;
         }
-        disconnect(observer);
-        observer = new MutationObserver(function () {
-            schedule();
-        });
-        observer.observe(contentNode, {childList: true, subtree: true});
-    }
-
-    function observeContainer(container) {
-        if (!(window.MutationObserver && container)) {
-            return;
-        }
-        disconnect(containerObserver);
-        containerObserver = new MutationObserver(function () {
-            raf(resolveTarget);
-        });
-        containerObserver.observe(container, {childList: true, subtree: true});
-    }
-
-    function setContentNode(node) {
-        if (contentNode === node) {
-            return;
-        }
-        if (!node) {
-            disconnect(observer);
-            contentNode = null;
-            return;
-        }
-        contentNode = node;
-        ensureMathForDocument(node.ownerDocument || document);
-        observeContent();
-        schedule();
-    }
-
-    function onIframeLoad() {
-        if (!iframeNode) {
-            return;
-        }
-        var doc = null;
-        try {
-            doc = iframeNode.contentDocument || iframeNode.contentWindow.document;
-        } catch (err) {
-            doc = null;
-        }
-        if (!doc || !doc.body) {
-            raf(onIframeLoad);
-            return;
-        }
-        ensureMathForDocument(doc);
-        setContentNode(doc.body);
-    }
-
-    function handleIframe(iframe) {
-        if (iframeNode && iframeNode !== iframe) {
-            iframeNode.removeEventListener('load', onIframeLoad);
-        }
-        iframeNode = iframe || null;
-        if (iframeNode) {
-            iframeNode.addEventListener('load', onIframeLoad);
-        }
-        onIframeLoad();
-    }
-
-    function resolveTarget() {
-        var host = document.getElementById(targetId);
-        if (!host) {
-            setContentNode(null);
-            iframeNode = null;
-            raf(resolveTarget);
-            return;
-        }
-        observeContainer(host);
-        var tag = (host.tagName || '').toLowerCase();
-        if (tag === 'iframe') {
-            handleIframe(host);
-            return;
-        }
-        var iframe = host.querySelector ? host.querySelector('iframe') : null;
-        if (iframe) {
-            handleIframe(iframe);
-            return;
-        }
-        handleIframe(null);
-        setContentNode(host);
-    }
-
-    function getMathJaxFor(node) {
-        var doc = node && (node.ownerDocument || document);
-        var win = doc && (doc.defaultView || doc.parentWindow);
-        if (win && win.MathJax) {
-            return win.MathJax;
-        }
-        return window.MathJax;
-    }
-
-    function runTypeset() {
-        scheduled = false;
-        if (!contentNode) {
-            return;
-        }
-        var math = getMathJaxFor(contentNode);
+        var math = window.MathJax;
         if (!(math && math.typesetPromise)) {
-            ensureMathForDocument(contentNode.ownerDocument || document);
-            if (retryTimer) {
-                clearTimeout(retryTimer);
-            }
-            retryTimer = setTimeout(runTypeset, 200);
+            setTimeout(function () {
+                typeset(target);
+            }, 150);
             return;
         }
-        disconnect(observer);
-        var promise = null;
         try {
-            promise = math.typesetPromise([contentNode]);
-        } catch (err) {
-            promise = null;
-        }
-        if (promise && typeof promise.then === 'function') {
-            promise.finally(function () {
-                observeContent();
+            math.typesetPromise([target]).catch(function (err) {
+                console.error('[mkviewer] MathJax typeset failed', err);
             });
-        } else {
-            observeContent();
+        } catch (err) {
+            console.error('[mkviewer] MathJax typeset threw', err);
         }
     }
 
-    function schedule() {
-        if (scheduled) {
+    function watch(node) {
+        if (!(window.MutationObserver && node)) {
             return;
         }
-        scheduled = true;
-        raf(runTypeset);
+        if (observer) {
+            observer.disconnect();
+        }
+        observer = new MutationObserver(function () {
+            typeset(node);
+        });
+        observer.observe(node, {childList: true, subtree: true});
     }
+
+    function queueCheck() {
+        if (timer) {
+            clearTimeout(timer);
+        }
+        timer = setTimeout(resolveHost, 200);
+    }
+
+    function resolveHost() {
+        var next = document.getElementById(PREVIEW_ID);
+        if (!next) {
+            if (observer) {
+                observer.disconnect();
+                observer = null;
+            }
+            host = null;
+            queueCheck();
+            return;
+        }
+        if (host !== next) {
+            host = next;
+            watch(host);
+            typeset(host);
+        }
+        queueCheck();
+    }
+
+    configure(window);
+    ensureScript(document);
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', resolveTarget);
+        document.addEventListener('DOMContentLoaded', resolveHost);
     } else {
-        resolveTarget();
-    }
-
-    var rootMath = window.MathJax;
-    if (rootMath) {
-        var startup = rootMath.startup = rootMath.startup || {};
-        var previousReady = typeof startup.ready === 'function' ? startup.ready : null;
-        startup.ready = function () {
-            var result = null;
-            if (previousReady) {
-                try {
-                    result = previousReady.apply(this, arguments);
-                } catch (err) {
-                    result = null;
-                }
-            } else if (typeof startup.defaultReady === 'function') {
-                try {
-                    result = startup.defaultReady();
-                } catch (err) {
-                    result = null;
-                }
-            }
-
-            if (result && typeof result.then === 'function') {
-                if (typeof result.finally === 'function') {
-                    return result.finally(schedule);
-                }
-                return result.then(function (value) {
-                    schedule();
-                    return value;
-                }, function (reason) {
-                    schedule();
-                    throw reason;
-                });
-            }
-
-            schedule();
-            return result;
-        };
+        resolveHost();
     }
 
     setTimeout(function () {
-        var math = getMathJaxFor(contentNode);
+        var math = window.MathJax;
         if (!(math && math.typesetPromise)) {
             console.warn('[mkviewer] MathJax 脚本尚未加载，若长时间无响应，请配置 MATHJAX_JS_URL 以使用内网镜像。');
         }
@@ -810,9 +660,9 @@ def list_documents() -> List[Dict[str, str]]:
 
 def _plain_text_html(text: str) -> str:
     if not text.strip():
-        return "<div class='doc-preview'><em>文档为空</em></div>"
+        return "<div class='doc-preview-inner doc-preview-empty'><em>文档为空</em></div>"
     esc = _esc(text)
-    return "<div class='doc-preview'>" + esc.replace("\n", "<br>") + "</div>"
+    return "<div class='doc-preview-inner'>" + esc.replace("\n", "<br>") + "</div>"
 
 
 def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, str, str, str]:
@@ -844,7 +694,7 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
         )
         rendered = md_renderer.convert(text2)
         toc_html = _render_markdown_toc(getattr(md_renderer, "toc_tokens", []))
-        html = "<div class='markdown-body'>" + rendered + "</div>"
+        html = "<div class='doc-preview-inner markdown-body'>" + rendered + "</div>"
     elif doc_type == "docx":
         text, html = _docx_from_bytes(data)
     elif doc_type == "doc":
@@ -1432,13 +1282,17 @@ body {
     box-shadow:var(--brand-shadow);
 }
 .doc-preview {
-    padding:0;
+    padding:20px 22px;
     margin:0;
     line-height:1.72;
     font-size:1rem;
+    box-sizing:border-box;
 }
-.doc-preview #doc-html-view {
-    padding:20px 22px;
+.doc-preview-inner {
+    min-height:1rem;
+}
+.doc-preview-empty {
+    color:var(--brand-muted);
 }
 .plaintext-view textarea {
     min-height:420px !important;
@@ -1741,7 +1595,7 @@ def ui_app():
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
                         html_view = gr.Markdown(
-                            "<div class='doc-preview'><em>请选择左侧文件…</em></div>",
+                            "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
                             elem_id="doc-html-view",
                             elem_classes=["doc-preview"],
                         )
