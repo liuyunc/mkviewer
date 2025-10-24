@@ -226,6 +226,7 @@ body {
 }
 .gradio-container .gr-row {
     display: flex;
+    flex-direction: row !important;
     flex-wrap: wrap;
     align-items: flex-start;
     gap: 24px;
@@ -240,12 +241,12 @@ body {
     min-width: 0;
     width: 100%;
 }
-@media (max-width: 860px) {
+@media (max-width: 768px) {
     .gradio-container {
         padding: 10px 14px 32px;
     }
     .gradio-container .gr-row {
-        flex-direction: column;
+        flex-direction: column !important;
     }
     .sidebar-col,
     .content-col {
@@ -1051,6 +1052,7 @@ body {
 }
 .gr-row {
     display:flex;
+    flex-direction:row !important;
     flex-wrap:wrap;
     align-items:flex-start;
     gap:24px !important;
@@ -1358,9 +1360,9 @@ body {
     .toc-col { position:static; }
     .toc-card { max-height:unset; }
 }
-@media (max-width:860px) {
+@media (max-width:768px) {
     .gradio-container { padding:10px 12px 32px; }
-    .gr-row { flex-direction:column; }
+    .gr-row { flex-direction:column !important; }
 }
 </style>
 """
