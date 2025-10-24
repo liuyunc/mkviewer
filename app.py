@@ -79,6 +79,7 @@ _MATHJAX_HEAD_TEMPLATE = """
     var timer = null;
     var host = null;
     var observer = null;
+    var PROCESS_ATTR = 'data-mathjax-processing';
 
     function configure(win) {
         if (!win) {
@@ -113,6 +114,9 @@ _MATHJAX_HEAD_TEMPLATE = """
         if (!target) {
             return;
         }
+        if (target.getAttribute(PROCESS_ATTR) === '1') {
+            return;
+        }
         var math = window.MathJax;
         if (!(math && math.typesetPromise)) {
             setTimeout(function () {
@@ -120,11 +124,24 @@ _MATHJAX_HEAD_TEMPLATE = """
             }, 150);
             return;
         }
+        target.setAttribute(PROCESS_ATTR, '1');
         try {
-            math.typesetPromise([target]).catch(function (err) {
-                console.error('[mkviewer] MathJax typeset failed', err);
-            });
+            var promise = math.typesetPromise([target]);
+            if (promise && typeof promise.then === 'function') {
+                promise.then(
+                    function () {
+                        target.removeAttribute(PROCESS_ATTR);
+                    },
+                    function (err) {
+                        target.removeAttribute(PROCESS_ATTR);
+                        console.error('[mkviewer] MathJax typeset failed', err);
+                    }
+                );
+            } else {
+                target.removeAttribute(PROCESS_ATTR);
+            }
         } catch (err) {
+            target.removeAttribute(PROCESS_ATTR);
             console.error('[mkviewer] MathJax typeset threw', err);
         }
     }
