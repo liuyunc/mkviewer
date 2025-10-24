@@ -77,13 +77,10 @@ _MATHJAX_HEAD_TEMPLATE = """
     var SCRIPT_ID = 'mkv-mathjax-loader';
     var PREVIEW_ID = 'doc-html-view';
     var SRC = '__MATHJAX_SRC__';
-    var timer = null;
-    var host = null;
     var observer = null;
-    var PROCESS_ATTR = 'data-mathjax-processing';
-    var PENDING = [];
-    var scriptReady = false;
-    var scriptFailed = false;
+    var pending = false;
+    var scriptPromise = null;
+    var currentHost = null;
 
     function configure(win) {
         if (!win) {
@@ -93,10 +90,18 @@ _MATHJAX_HEAD_TEMPLATE = """
         var tex = cfg.tex = cfg.tex || {};
         tex.inlineMath = tex.inlineMath || [['$', '$'], ['\\(', '\\)']];
         tex.displayMath = tex.displayMath || [['$$', '$$'], ['\\[', '\\]']];
+        tex.processEscapes = tex.processEscapes !== false;
+        tex.processEnvironments = tex.processEnvironments !== false;
         cfg.svg = cfg.svg || {fontCache: 'global'};
         var options = cfg.options = cfg.options || {};
         if (!options.ignoreHtmlClass) {
             options.ignoreHtmlClass = 'tex2jax_ignore';
+        }
+        if (!options.processHtmlClass) {
+            options.processHtmlClass = 'arithmatex|doc-preview-inner';
+        }
+        if (!options.skipHtmlTags) {
+            options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
         }
         if (!options.processHtmlClass) {
             options.processHtmlClass = 'arithmatex|doc-preview-inner';
@@ -108,186 +113,147 @@ _MATHJAX_HEAD_TEMPLATE = """
         cfg.svg = cfg.svg || {fontCache: 'global'};
     }
 
-    function warnFailure(err) {
-        scriptFailed = true;
+    function showFailure(err) {
         console.error('[mkviewer] MathJax 脚本加载失败：' + SRC, err);
         var container = document.getElementById(PREVIEW_ID);
-        if (container) {
-            var banner = container.querySelector('.mathjax-error-banner');
-            if (!banner) {
-                banner = document.createElement('div');
-                banner.className = 'mathjax-error-banner';
-                banner.textContent = 'MathJax 脚本加载失败，请检查 MATHJAX_JS_URL 设置或镜像文件。';
-                container.insertBefore(banner, container.firstChild || null);
-            }
-        }
-    }
-
-    function onScriptReady() {
-        if (scriptReady) {
+        if (!container) {
             return;
         }
-        scriptReady = true;
-        configure(window);
-        flushPending();
+        var banner = container.querySelector('.mathjax-error-banner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.className = 'mathjax-error-banner';
+            banner.textContent = 'MathJax 脚本加载失败，请检查 MATHJAX_JS_URL 设置或镜像文件。';
+            container.insertBefore(banner, container.firstChild || null);
+        }
     }
 
     function ensureScript(doc) {
-        if (!doc) {
-            return;
+        if (scriptPromise) {
+            return scriptPromise;
         }
-        var existing = doc.getElementById(SCRIPT_ID);
-        if (existing) {
-            if (!existing.getAttribute('data-mkv-bound')) {
-                existing.setAttribute('data-mkv-bound', '1');
-                existing.addEventListener('load', function () {
-                    existing.setAttribute('data-loaded', '1');
-                    onScriptReady();
+        if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+            scriptPromise = window.MathJax.startup.promise
+                .then(function () {
+                    return window.MathJax;
+                })
+                .catch(function (err) {
+                    showFailure(err);
+                    scriptPromise = null;
+                    throw err;
                 });
-                existing.addEventListener('error', warnFailure);
+            return scriptPromise;
+        }
+        scriptPromise = new Promise(function (resolve, reject) {
+            var existing = doc.getElementById(SCRIPT_ID);
+            if (existing && existing.getAttribute('data-mkv-loaded') === '1') {
+                return resolve(window.MathJax);
             }
-            if (existing.getAttribute('data-loaded') === '1') {
-                onScriptReady();
+            var head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
+            if (!head) {
+                return reject(new Error('无法找到 <head> 元素以加载 MathJax'));
             }
-            return;
-        }
-        var head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
-        if (!head) {
-            return;
-        }
-        var script = doc.createElement('script');
-        script.id = SCRIPT_ID;
-        script.setAttribute('defer', 'defer');
-        script.setAttribute('data-mkv-bound', '1');
-        script.src = SRC;
-        script.addEventListener('load', function () {
-            script.setAttribute('data-loaded', '1');
-            onScriptReady();
+            var script = existing || doc.createElement('script');
+            script.id = SCRIPT_ID;
+            script.src = SRC;
+            script.type = 'text/javascript';
+            script.async = true;
+            if (!existing) {
+                head.appendChild(script);
+            }
+            script.addEventListener('load', function () {
+                script.setAttribute('data-mkv-loaded', '1');
+                if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+                    window.MathJax.startup.promise.then(function () {
+                        resolve(window.MathJax);
+                    }).catch(reject);
+                } else {
+                    resolve(window.MathJax);
+                }
+            });
+            script.addEventListener('error', function (err) {
+                showFailure(err);
+                reject(err);
+            });
         });
-        script.addEventListener('error', warnFailure);
-        head.appendChild(script);
-    }
-
-    function remember(target) {
-        if (!target) {
-            return;
-        }
-        if (PENDING.indexOf(target) === -1) {
-            PENDING.push(target);
-        }
-    }
-
-    function flushPending() {
-        if (!PENDING.length) {
-            return;
-        }
-        var nodes = PENDING.slice();
-        PENDING.length = 0;
-        nodes.forEach(function (node) {
-            typeset(node);
+        scriptPromise = scriptPromise.catch(function (err) {
+            showFailure(err);
+            scriptPromise = null;
+            throw err;
         });
+        return scriptPromise;
     }
 
     function typeset(target) {
-        if (!target || scriptFailed) {
+        if (!target) {
             return;
         }
-        if (target.getAttribute(PROCESS_ATTR) === '1') {
-            return;
-        }
-        var math = window.MathJax;
-        if (!(math && math.typesetPromise)) {
-            remember(target);
-            if (scriptReady) {
-                setTimeout(function () {
-                    typeset(target);
-                }, 120);
-            }
-            return;
-        }
-        target.setAttribute(PROCESS_ATTR, '1');
-        try {
-            var promise = math.typesetPromise([target]);
-            if (promise && typeof promise.then === 'function') {
-                promise.then(
-                    function () {
-                        target.removeAttribute(PROCESS_ATTR);
-                    },
-                    function (err) {
-                        target.removeAttribute(PROCESS_ATTR);
-                        console.error('[mkviewer] MathJax typeset failed', err);
-                    }
-                );
-            } else {
-                target.removeAttribute(PROCESS_ATTR);
-            }
-        } catch (err) {
-            target.removeAttribute(PROCESS_ATTR);
-            console.error('[mkviewer] MathJax typeset threw', err);
-        }
+        ensureScript(document)
+            .then(function (math) {
+                if (!(math && math.typesetPromise)) {
+                    return;
+                }
+                return math.typesetPromise([target]).catch(function (err) {
+                    console.error('[mkviewer] MathJax typeset failed', err);
+                });
+            })
+            .catch(function () {
+                /* 错误在 ensureScript 中已经记录 */
+            });
     }
 
-    function watch(node) {
-        if (!(window.MutationObserver && node)) {
+    function handleMutations() {
+        var liveHost = document.getElementById(PREVIEW_ID);
+        if (liveHost && liveHost !== currentHost) {
+            attachObserver(liveHost);
+            typeset(liveHost);
+            return;
+        }
+        var target = currentHost;
+        if (pending) {
+            return;
+        }
+        pending = true;
+        requestAnimationFrame(function () {
+            pending = false;
+            typeset(target);
+        });
+    }
+
+    function attachObserver(target) {
+        if (!(window.MutationObserver && target)) {
             return;
         }
         if (observer) {
             observer.disconnect();
         }
+        currentHost = target;
         observer = new MutationObserver(function () {
-            typeset(node);
+            handleMutations();
         });
-        observer.observe(node, {childList: true, subtree: true});
+        observer.observe(target, {childList: true, subtree: true});
     }
 
-    function queueCheck() {
-        if (timer) {
-            clearTimeout(timer);
-        }
-        timer = setTimeout(resolveHost, 160);
-    }
-
-    function resolveHost() {
-        var next = document.getElementById(PREVIEW_ID);
-        if (!next) {
-            if (observer) {
-                observer.disconnect();
-                observer = null;
-            }
-            host = null;
-            queueCheck();
+    function init() {
+        var host = document.getElementById(PREVIEW_ID);
+        if (!host) {
+            requestAnimationFrame(init);
             return;
         }
-        if (host !== next) {
-            host = next;
-            watch(host);
-            typeset(host);
-            return queueCheck();
-        }
-        if (scriptReady && PENDING.length) {
-            flushPending();
-        }
-        queueCheck();
+        attachObserver(host);
+        typeset(host);
     }
 
     configure(window);
-    ensureScript(document);
+    ensureScript(document).catch(function () {
+        /* 错误已在 ensureScript 中处理 */
+    });
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', resolveHost);
+        document.addEventListener('DOMContentLoaded', init);
     } else {
-        resolveHost();
+        init();
     }
-
-    setTimeout(function () {
-        if (scriptFailed) {
-            return;
-        }
-        var math = window.MathJax;
-        if (!(math && math.typesetPromise)) {
-            console.warn('[mkviewer] MathJax 脚本尚未加载，若长时间无响应，请确认 MATHJAX_JS_URL 是否可访问：' + SRC);
-        }
-    }, 6000);
 })();
 </script>
 """
