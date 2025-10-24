@@ -67,54 +67,97 @@ ES_ENABLED = bool(ES_HOSTS)
 # typesetter whenever the preview HTML changes.
 MATHJAX_HEAD = """
 <script>
-window.MathJax = window.MathJax || {};
-window.MathJax.tex = window.MathJax.tex || {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]};
-window.MathJax.svg = window.MathJax.svg || {fontCache: 'global'};
-window.MathJax.startup = Object.assign({typeset: false}, window.MathJax.startup || {});
+(function () {
+    window.MathJax = window.MathJax || {};
+    window.MathJax.tex = window.MathJax.tex || {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]};
+    window.MathJax.svg = window.MathJax.svg || {fontCache: 'global'};
+    var startup = window.MathJax.startup || {};
+    if (!Object.prototype.hasOwnProperty.call(startup, 'typeset')) {
+        startup.typeset = false;
+    }
+    window.MathJax.startup = startup;
+})();
 </script>
 <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 <script>
-(function setupMathJaxObserver() {
-    const targetId = 'doc-html-view';
-    const ensureObserver = () => {
-        const target = document.getElementById(targetId);
-        if (!target) {
-            requestAnimationFrame(ensureObserver);
+(function () {
+    var targetId = 'doc-html-view';
+    var observer = null;
+    var scheduled = false;
+    var raf = window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); };
+    var targetNode = null;
+
+    function startWatching() {
+        if (!window.MutationObserver || !targetNode) {
+            scheduled = false;
             return;
         }
-        const trigger = () => {
-            if (window.MathJax && window.MathJax.typesetPromise) {
-                if (observer) {
-                    observer.disconnect();
-                }
-                window.MathJax.typesetPromise([target]).catch(() => {}).finally(() => {
-                    startWatching();
-                });
-            }
-        };
-        let observer;
-        let scheduled = false;
-        const schedule = () => {
-            if (scheduled) {
-                return;
-            }
-            scheduled = true;
-            requestAnimationFrame(() => {
-                scheduled = false;
-                trigger();
+        if (observer) {
+            observer.disconnect();
+        }
+        observer = new MutationObserver(function () {
+            schedule();
+        });
+        observer.observe(targetNode, {childList: true, subtree: true});
+        scheduled = false;
+    }
+
+    function runTypeset() {
+        scheduled = false;
+        if (!targetNode) {
+            return;
+        }
+        if (!(window.MathJax && window.MathJax.typesetPromise)) {
+            startWatching();
+            return;
+        }
+        if (observer) {
+            observer.disconnect();
+        }
+        var promise;
+        try {
+            promise = window.MathJax.typesetPromise([targetNode]);
+        } catch (err) {
+            promise = null;
+        }
+        if (promise && promise.then) {
+            promise.then(function () {
+                startWatching();
+            }, function () {
+                startWatching();
             });
+        } else {
+            startWatching();
+        }
+    }
+
+    function schedule() {
+        if (scheduled) {
+            return;
+        }
+        scheduled = true;
+        raf(function () {
+            runTypeset();
+        });
+    }
+
+    function ensureObserver() {
+        targetNode = document.getElementById(targetId);
+        if (!targetNode) {
+            raf(ensureObserver);
+            return;
+        }
+        window._mkviewerTypeset = function () {
+            runTypeset();
         };
-        const startWatching = () => {
-            if (observer) {
-                observer.disconnect();
-            }
-            observer = new MutationObserver(() => schedule());
-            observer.observe(target, {childList: true, subtree: true});
-        };
-        window._mkviewerTypeset = trigger;
+        if (!window.MutationObserver) {
+            runTypeset();
+            return;
+        }
         startWatching();
-        trigger();
-    };
+        runTypeset();
+    }
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', ensureObserver);
     } else {
@@ -917,6 +960,9 @@ body {
 .mkv-meta-link .mkv-link {
     white-space:nowrap;
 }
+.mkv-meta-link .mkv-link + .mkv-link {
+    margin-left:12px;
+}
 .gr-row {
     gap:24px !important;
 }
@@ -925,9 +971,11 @@ body {
 }
 .sidebar-col .controls {
     display:flex;
-    gap:10px;
     flex-wrap:wrap;
     margin-bottom:12px;
+}
+.sidebar-col .controls > * + * {
+    margin-left:10px;
 }
 .sidebar-heading h3 {
     margin-bottom:12px !important;
@@ -1023,7 +1071,9 @@ body {
 .reindex-stack {
     display:flex;
     flex-direction:column;
-    gap:8px;
+    margin-top:8px;
+}
+.reindex-stack > * + * {
     margin-top:8px;
 }
 .reindex-stack .gr-button {
@@ -1331,15 +1381,22 @@ def _hero_html(doc_total: Optional[int] = None) -> str:
     else:
         total_span = f"<span>文档总数：<strong>{doc_total}</strong></span>"
     meta_items = [total_span]
-    feedback_link = (
-        "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' "
-        "target='_blank' rel='noopener'>文档问题反馈</a>"
-    )
+    feedback_links = [
+        (
+            "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' "
+            "target='_blank' rel='noopener'>文档问题反馈</a>"
+        ),
+        (
+            "<a class='mkv-link mkv-feedback-link' href='http://10.20.40.101:7860/' "
+            "target='_blank' rel='noopener'>通号院在线扫描类 PDF 解析工具</a>"
+        ),
+    ]
+    feedback_link = "".join(feedback_links)
     return (
         f"""
         <section class='mkv-hero'>
             <h1>{_esc(SITE_TITLE)}</h1>
-            <p>在这里浏览、检索和预览来自 MinIO 的知识文档，快速定位你需要的内容。</p>
+            <p>在这里浏览、检索来自通号院的知识文档，快速定位你需要的工作内容。</p>
             <div class='mkv-meta-bar'>
                 <div class='mkv-meta'>{''.join(meta_items)}</div>
                 <div class='mkv-meta-link'>{feedback_link}</div>
