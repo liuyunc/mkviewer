@@ -8,6 +8,8 @@ from functools import lru_cache
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
+import urllib.error
+import urllib.request
 
 import gradio as gr
 from markdown import Markdown
@@ -81,28 +83,77 @@ _MATHJAX_HEAD_TEMPLATE = """
     var ready = false;
     var pending = false;
     var needsTypeset = true;
+    var statusBanner = null;
+    var statusShown = false;
+    var pendingStatus = null;
 
-    function showFailure(err) {
-        console.error('[mkviewer] MathJax 脚本加载失败：' + SRC, err);
-        var container = document.getElementById(PREVIEW_ID);
-        if (!container) {
-            return;
+    function describeError(err) {
+        if (!err) {
+            return '未知错误';
         }
-        var banner = container.querySelector('.mathjax-error-banner');
-        if (!banner) {
-            banner = document.createElement('div');
-            banner.className = 'mathjax-error-banner';
-            banner.textContent = 'MathJax 脚本加载失败，请检查 MATHJAX_JS_URL 设置或镜像文件。';
-            container.insertBefore(banner, container.firstChild || null);
+        if (typeof err === 'string') {
+            return err;
         }
-        if (!options.processHtmlClass) {
-            options.processHtmlClass = 'arithmatex|doc-preview-inner';
+        if (err.message) {
+            return err.message;
+        }
+        try {
+            return err.toString();
+        } catch (e) {
+            return '未知错误';
         }
         var cfg = win.MathJax = win.MathJax || {};
         var tex = cfg.tex = cfg.tex || {};
         tex.inlineMath = tex.inlineMath || [['$', '$'], ['\\(', '\\)']];
         tex.displayMath = tex.displayMath || [['$$', '$$'], ['\\[', '\\]']];
         cfg.svg = cfg.svg || {fontCache: 'global'};
+    }
+
+    function updateStatus(kind, message) {
+        var container = document.getElementById(PREVIEW_ID);
+        if (!container) {
+            pendingStatus = {kind: kind, message: message};
+            return;
+        }
+        pendingStatus = null;
+        var legacy = container.querySelector('.mathjax-error-banner');
+        if (legacy && legacy.parentNode) {
+            legacy.parentNode.removeChild(legacy);
+        }
+        var banner = container.querySelector('.mathjax-status-banner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.className = 'mathjax-status-banner';
+            container.insertBefore(banner, container.firstChild || null);
+        }
+        banner.setAttribute('data-kind', kind);
+        banner.textContent = message;
+        statusBanner = banner;
+    }
+
+    function showFailure(err) {
+        console.error('[mkviewer] MathJax 脚本加载失败：' + SRC, err);
+        statusShown = false;
+        updateStatus('error', 'MathJax 脚本加载失败，请检查 MATHJAX_JS_URL 设置或镜像文件。错误：' + describeError(err));
+    }
+
+    function successMessage() {
+        var version = '';
+        if (window.MathJax && window.MathJax.version) {
+            version = window.MathJax.version;
+        }
+        var parts = ['MathJax 脚本已加载成功'];
+        if (version) {
+            parts[0] += '（v' + version + '）';
+        }
+        parts.push('来源：' + SRC);
+        parts.push('已准备渲染数学公式。');
+        return parts.join(' ');
+    }
+
+    function showSuccess() {
+        statusShown = true;
+        updateStatus('ok', successMessage());
     }
 
     function getHost() {
@@ -136,6 +187,8 @@ _MATHJAX_HEAD_TEMPLATE = """
             pending = false;
             window.MathJax.typesetPromise([host]).catch(function (err) {
                 console.error('[mkviewer] MathJax 渲染失败', err);
+                statusShown = false;
+                updateStatus('error', 'MathJax 渲染失败：' + describeError(err));
             });
         });
     }
@@ -166,9 +219,20 @@ _MATHJAX_HEAD_TEMPLATE = """
             return;
         }
         attachObserver(host);
+        if (pendingStatus) {
+            var next = pendingStatus;
+            pendingStatus = null;
+            updateStatus(next.kind, next.message);
+        }
         if (needsTypeset) {
             typeset(host);
         }
+    }
+
+    function markReady() {
+        ready = true;
+        typeset();
+        showSuccess();
     }
 
     function configure(win) {
@@ -229,8 +293,7 @@ _MATHJAX_HEAD_TEMPLATE = """
             if (this && this.startup && typeof this.startup.defaultReady === 'function') {
                 this.startup.defaultReady();
             }
-            ready = true;
-            typeset();
+            markReady();
             if (originalReady) {
                 try {
                     originalReady.apply(this, arguments);
@@ -244,15 +307,17 @@ _MATHJAX_HEAD_TEMPLATE = """
     function loadScript(doc) {
         var existing = doc.getElementById(SCRIPT_ID);
         if (existing) {
-            if (existing.getAttribute('data-mkv-loaded') === '1' && window.MathJax && window.MathJax.typesetPromise) {
-                if (window.MathJax.startup && window.MathJax.startup.promise) {
-                    window.MathJax.startup.promise.then(function () {
-                        ready = true;
-                        typeset();
-                    });
-                } else {
-                    ready = true;
-                    typeset();
+            if (existing.getAttribute('data-mkv-loaded') === '1') {
+                if (window.MathJax && window.MathJax.typesetPromise) {
+                    if (window.MathJax.startup && window.MathJax.startup.promise) {
+                        window.MathJax.startup.promise.then(function () {
+                            markReady();
+                        });
+                    } else {
+                        markReady();
+                    }
+                } else if (!window.MathJax) {
+                    showFailure(new Error('MathJax 未在窗口中暴露。'));
                 }
             }
             ensureHost();
@@ -274,14 +339,14 @@ _MATHJAX_HEAD_TEMPLATE = """
             script.setAttribute('data-mkv-loaded', '1');
             if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
                 window.MathJax.startup.promise.then(function () {
-                    ready = true;
-                    typeset();
+                    markReady();
                 }).catch(function (err) {
                     showFailure(err);
                 });
             } else if (window.MathJax) {
-                ready = true;
-                typeset();
+                markReady();
+            } else {
+                showFailure(new Error('MathJax 未在窗口中暴露。'));
             }
         });
         head.appendChild(script);
@@ -778,6 +843,77 @@ def _plain_text_html(text: str) -> str:
         return "<div class='doc-preview-inner doc-preview-empty'><em>文档为空</em></div>"
     esc = _esc(text)
     return "<div class='doc-preview-inner'>" + esc.replace("\n", "<br>") + "</div>"
+
+
+def _probe_mathjax_resource(url: str, timeout: float = 5.0):
+    """Attempt to reach the MathJax bundle and return response metadata."""
+    attempts: List[str] = []
+    for method in ("HEAD", "GET"):
+        req = urllib.request.Request(url, method=method)
+        req.add_header("User-Agent", "mkviewer/1.0 (+MathJax probe)")
+        if method == "GET":
+            req.add_header("Range", "bytes=0-2047")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # type: ignore[arg-type]
+                status = getattr(resp, "status", getattr(resp, "code", None))
+                headers = {k: v for k, v in resp.headers.items()}
+                data = b""
+                if method == "GET":
+                    data = resp.read(2048)
+            return method, status, headers, data, attempts
+        except Exception as exc:  # pragma: no cover - 网络状况不可预测
+            attempts.append(f"{method} 请求失败：{exc}")
+            continue
+    raise RuntimeError("; ".join(attempts) or "无法访问 MathJax 脚本")
+
+
+def check_mathjax_bundle() -> str:
+    """Return an HTML snippet describing whether the MathJax bundle is reachable."""
+    try:
+        method, status, headers, snippet, attempts = _probe_mathjax_resource(MATHJAX_JS_URL)
+    except Exception as exc:
+        reason = _esc(str(exc))
+        return (
+            "<div class='mathjax-check mathjax-check-error'>"
+            "<strong>MathJax 脚本不可访问。</strong>"
+            f"<div class='mathjax-check-details'><p>请求地址：{_esc(MATHJAX_JS_URL)}</p>"
+            f"<p>错误信息：{reason}</p></div>"
+            "</div>"
+        )
+
+    details: List[str] = []
+    details.append(f"<li>请求地址：{_esc(MATHJAX_JS_URL)}</li>")
+    if status is not None:
+        details.append(f"<li>HTTP 状态：{_esc(str(status))}</li>")
+    details.append(f"<li>请求方式：{_esc(method)}</li>")
+    if attempts:
+        first_error = _esc(attempts[0])
+        details.append(f"<li>其它尝试：{first_error}</li>")
+    content_type = headers.get("Content-Type")
+    if content_type:
+        details.append(f"<li>Content-Type：{_esc(content_type)}</li>")
+    content_length = headers.get("Content-Length")
+    if content_length:
+        details.append(f"<li>Content-Length：{_esc(content_length)}</li>")
+    content_range = headers.get("Content-Range")
+    if content_range:
+        details.append(f"<li>Content-Range：{_esc(content_range)}</li>")
+
+    snippet_text = ""
+    if snippet:
+        snippet_text = snippet.decode("utf-8", errors="replace")
+        found = "MathJax" in snippet_text
+        details.append(
+            f"<li>已读取前 {len(snippet)} 字节，包含“MathJax”关键字：{'是' if found else '否'}</li>"
+        )
+
+    list_html = "<ul>" + "".join(details) + "</ul>" if details else ""
+    return (
+        "<div class='mathjax-check mathjax-check-ok'>"
+        "<strong>MathJax 脚本可访问。</strong>"
+        f"<div class='mathjax-check-details'>{list_html}</div>"
+        "</div>"
+    )
 
 
 def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, str, str, str]:
@@ -1409,15 +1545,68 @@ body {
 .doc-preview-empty {
     color:var(--brand-muted);
 }
-.mathjax-error-banner {
+.mathjax-status-banner {
     margin-bottom:16px;
     padding:12px 16px;
     border-radius:14px;
-    background:rgba(220, 38, 38, 0.12);
-    border:1px solid rgba(220, 38, 38, 0.22);
-    color:#991b1b;
     font-size:.95rem;
     line-height:1.6;
+    border:1px solid rgba(148, 163, 184, 0.35);
+    background:rgba(148, 163, 184, 0.12);
+    color:#0f172a;
+}
+.mathjax-status-banner[data-kind="error"] {
+    background:rgba(220,38,38,0.12);
+    border-color:rgba(220,38,38,0.28);
+    color:#991b1b;
+}
+.mathjax-status-banner[data-kind="ok"] {
+    background:rgba(34,197,94,0.12);
+    border-color:rgba(34,197,94,0.28);
+    color:#166534;
+}
+.mathjax-tools {
+    display:flex;
+    align-items:stretch;
+    gap:12px;
+    margin-bottom:12px;
+}
+.mathjax-tools .gradio-button {
+    min-width:168px;
+}
+.mathjax-check-result {
+    flex:1;
+}
+.mathjax-check {
+    padding:12px 16px;
+    border-radius:14px;
+    border:1px solid var(--brand-border);
+    background:var(--brand-card);
+    box-shadow:var(--brand-shadow);
+    font-size:.95rem;
+    line-height:1.6;
+}
+.mathjax-check-ok {
+    background:rgba(34,197,94,0.12);
+    border-color:rgba(34,197,94,0.28);
+    color:#166534;
+}
+.mathjax-check-error {
+    background:rgba(220,38,38,0.12);
+    border-color:rgba(220,38,38,0.28);
+    color:#991b1b;
+}
+.mathjax-check-details {
+    margin-top:8px;
+    font-size:.9rem;
+    color:var(--brand-muted);
+}
+.mathjax-check-details ul {
+    margin:6px 0 0;
+    padding-left:22px;
+}
+.mathjax-check-details li {
+    margin-bottom:4px;
 }
 .plaintext-view textarea {
     min-height:420px !important;
@@ -1718,6 +1907,12 @@ def ui_app():
                             elem_classes=["toc-card"],
                         )
                     with gr.TabItem("预览", id="preview"):
+                        with gr.Row(elem_classes=["mathjax-tools"]):
+                            btn_mathjax_check = gr.Button("验证 MathJax 脚本", variant="secondary")
+                            mathjax_status = gr.HTML(
+                                "<em>点击“验证 MathJax 脚本”以确认本地 MathJax 镜像是否可用。</em>",
+                                elem_classes=["mathjax-check-result"],
+                            )
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
                         html_view = gr.HTML(
                             "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
@@ -1792,6 +1987,7 @@ def ui_app():
         btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_clear.click(_clear_cache, outputs=status_bar)
         btn_reindex.click(_force_reindex, outputs=status_bar)
+        btn_mathjax_check.click(lambda: check_mathjax_bundle(), outputs=mathjax_status)
 
         q.submit(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
         btn_search.click(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
