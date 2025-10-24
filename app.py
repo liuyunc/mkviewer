@@ -220,16 +220,17 @@ body {
     font-family: "PingFang SC","Microsoft YaHei","Source Han Sans SC","Helvetica Neue",Arial,sans-serif;
 }
 .gradio-container {
-    max-width: 1560px;
+    max-width: 1880px;
+    width: 100%;
     margin: 0 auto;
-    padding: 16px 32px 40px;
+    padding: 16px 16px 40px;
 }
 .gradio-container .gr-row {
     display: flex;
     flex-direction: row !important;
     flex-wrap: wrap;
     align-items: flex-start;
-    gap: 24px;
+    gap: 20px;
 }
 #layout-main {
     flex-wrap: nowrap;
@@ -906,9 +907,10 @@ body {
 }
 .gradio-container {
     background:transparent !important;
-    max-width:1560px;
+    max-width:1880px;
+    width:100%;
     margin:0 auto;
-    padding:16px 40px 56px;
+    padding:16px 20px 56px;
 }
 .gradio-container .block.padded {
     background:transparent;
@@ -1060,7 +1062,7 @@ body {
     flex-direction:row !important;
     flex-wrap:wrap;
     align-items:flex-start;
-    gap:24px !important;
+    gap:20px !important;
 }
 #layout-main {
     flex-wrap:nowrap;
