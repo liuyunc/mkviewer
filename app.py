@@ -1337,15 +1337,6 @@ def _hero_html(doc_total: Optional[int] = None) -> str:
     )
     return (
         f"""
-        <header class='mkv-topbar'>
-            <div class='mkv-brand'>
-                <span class='mkv-logo'>MK</span>
-                <div>
-                    <div class='mkv-brand-title'>{_esc(SITE_TITLE)}</div>
-                    <div class='mkv-brand-subtitle'>MinIO 文档知识库</div>
-                </div>
-            </div>
-        </header>
         <section class='mkv-hero'>
             <h1>{_esc(SITE_TITLE)}</h1>
             <p>在这里浏览、检索和预览来自 MinIO 的知识文档，快速定位你需要的内容。</p>
@@ -1384,19 +1375,19 @@ def ui_app():
                 with gr.Column(elem_classes=["sidebar-sticky"]):
                     gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
                     with gr.Row(elem_classes=["controls"]):
-                        btn_refresh = gr.Button("刷新树", variant="secondary")
                         btn_expand = gr.Button("展开全部")
                         btn_collapse = gr.Button("折叠全部")
-                    btn_clear = gr.Button("清空缓存")
-                    gr.HTML("<div class='search-title'>全文搜索</div>", elem_classes=["search-title"])
                     with gr.Column(elem_classes=["search-stack"]):
                         q = gr.Textbox(
                             show_label=False,
-                            placeholder="输入关键字… 然后回车或点搜索",
+                            placeholder="支持全文搜索",
                             elem_classes=["search-input"],
                         )
                         btn_search = gr.Button("搜索", elem_classes=["search-button"])
                     tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
+                    with gr.Row(elem_classes=["controls"]):
+                        btn_clear = gr.Button("清空缓存")
+                        btn_refresh = gr.Button("刷新树", variant="secondary")
                     with gr.Column(elem_classes=["reindex-stack"]):
                         btn_reindex = gr.Button("重建索引", variant="secondary")
                         status_bar = gr.HTML("", elem_classes=["status-bar"])
