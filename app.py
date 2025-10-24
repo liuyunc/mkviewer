@@ -80,83 +80,33 @@ _MATHJAX_HEAD_TEMPLATE = """
     var SRC = '__MATHJAX_SRC__';
     var observer = null;
     var observedHost = null;
-    var ready = false;
+    var mathReady = false;
     var pending = false;
     var needsTypeset = true;
+    var hostRetryTimer = null;
 
-    function getHost() {
-        var host = document.getElementById(PREVIEW_ID);
-        if (host && typeof host.isConnected === 'boolean' && !host.isConnected) {
-            return null;
+    function scheduleHostCheck() {
+        if (hostRetryTimer !== null) {
+            return;
         }
-        return host;
+        hostRetryTimer = setTimeout(function () {
+            hostRetryTimer = null;
+            ensureObserver();
+        }, 120);
     }
 
-    function queueTypeset(target) {
-        var host = target || getHost();
-        if (!host) {
-            needsTypeset = true;
-            requestAnimationFrame(ensureHost);
-            return;
-        }
-        if (observedHost !== host) {
-            attachObserver(host);
-        }
-        if (!ready || !(window.MathJax && window.MathJax.typesetPromise)) {
-            needsTypeset = true;
-            return;
-        }
-        needsTypeset = false;
-        if (pending) {
-            return;
-        }
-        pending = true;
-        requestAnimationFrame(function () {
-            window.MathJax.typesetPromise([host]).then(function () {
-                pending = false;
-            }, function (err) {
-                pending = false;
-                console.error('[mkviewer] MathJax 渲染失败', err);
-            });
-        });
-    }
-
-    function attachObserver(host) {
-        if (!host || !window.MutationObserver) {
-            return;
-        }
-        if (observer) {
-            observer.disconnect();
-        }
-        observer = new MutationObserver(function (mutations) {
-            for (var i = 0; i < mutations.length; i++) {
-                if (mutations[i].type === 'childList' || mutations[i].type === 'subtree') {
-                    queueTypeset(host);
-                    break;
-                }
+    function ensurePair(pairs, left, right, prepend) {
+        for (var i = 0; i < pairs.length; i++) {
+            if (pairs[i][0] === left && pairs[i][1] === right) {
+                return pairs;
             }
-        });
-        observer.observe(host, {childList: true, subtree: true});
-        observedHost = host;
-    }
-
-    function ensureHost() {
-        var host = getHost();
-        if (!host) {
-            requestAnimationFrame(ensureHost);
-            return;
         }
-        if (observedHost !== host) {
-            attachObserver(host);
+        if (prepend) {
+            pairs.unshift([left, right]);
+        } else {
+            pairs.push([left, right]);
         }
-        if (needsTypeset) {
-            queueTypeset(host);
-        }
-    }
-
-    function markReady() {
-        ready = true;
-        queueTypeset();
+        return pairs;
     }
 
     function configure(win) {
@@ -167,19 +117,6 @@ _MATHJAX_HEAD_TEMPLATE = """
         var tex = cfg.tex = cfg.tex || {};
         var inlinePairs = tex.inlineMath ? tex.inlineMath.slice() : [];
         var displayPairs = tex.displayMath ? tex.displayMath.slice() : [];
-        function ensurePair(pairs, left, right, prepend) {
-            for (var i = 0; i < pairs.length; i++) {
-                if (pairs[i][0] === left && pairs[i][1] === right) {
-                    return pairs;
-                }
-            }
-            if (prepend) {
-                pairs.unshift([left, right]);
-            } else {
-                pairs.push([left, right]);
-            }
-            return pairs;
-        }
         inlinePairs = ensurePair(inlinePairs, '$', '$', true);
         inlinePairs = ensurePair(inlinePairs, '\(', '\)', false);
         displayPairs = ensurePair(displayPairs, '$$', '$$', true);
@@ -188,13 +125,14 @@ _MATHJAX_HEAD_TEMPLATE = """
         tex.displayMath = displayPairs;
         tex.processEscapes = true;
         tex.processEnvironments = true;
-        cfg.svg = cfg.svg || {fontCache: 'global'};
         var options = cfg.options = cfg.options || {};
         if (!options.ignoreHtmlClass) {
             options.ignoreHtmlClass = 'tex2jax_ignore';
+        } else if (options.ignoreHtmlClass.indexOf('tex2jax_ignore') === -1) {
+            options.ignoreHtmlClass += '|tex2jax_ignore';
         }
         var processClass = options.processHtmlClass || '';
-        var requiredClasses = ['doc-preview-inner', 'docx-preview', 'arithmatex'];
+        var requiredClasses = ['doc-preview', 'doc-preview-inner', 'docx-preview', 'arithmatex'];
         if (processClass) {
             var seen = processClass.split('|');
             for (var i = 0; i < requiredClasses.length; i++) {
@@ -212,35 +150,107 @@ _MATHJAX_HEAD_TEMPLATE = """
         }
         var startup = cfg.startup = cfg.startup || {};
         startup.typeset = false;
-        var originalReady = typeof startup.ready === 'function' ? startup.ready : null;
-        startup.ready = function () {
-            if (this && this.startup && typeof this.startup.defaultReady === 'function') {
-                this.startup.defaultReady();
+    }
+
+    function requestTypeset(host) {
+        var target = host || document.getElementById(PREVIEW_ID);
+        if (!target || (typeof target.isConnected === 'boolean' && !target.isConnected)) {
+            needsTypeset = true;
+            scheduleHostCheck();
+            return;
+        }
+        if (observedHost !== target) {
+            ensureObserver(target);
+        }
+        if (!mathReady || !(window.MathJax && window.MathJax.typesetPromise)) {
+            needsTypeset = true;
+            return;
+        }
+        needsTypeset = false;
+        if (pending) {
+            return;
+        }
+        pending = true;
+        window.MathJax.typesetPromise([target]).then(function () {
+            pending = false;
+            if (needsTypeset) {
+                requestTypeset(target);
             }
-            markReady();
-            if (originalReady) {
-                try {
-                    originalReady.apply(this, arguments);
-                } catch (err) {
-                    console.error('[mkviewer] MathJax 自定义启动回调失败', err);
+        }, function (err) {
+            pending = false;
+            console.error('[mkviewer] MathJax 渲染失败', err);
+            if (needsTypeset) {
+                requestTypeset(target);
+            }
+        });
+    }
+
+    function observe(host) {
+        if (!window.MutationObserver || !host) {
+            return;
+        }
+        if (observer) {
+            observer.disconnect();
+        }
+        observer = new MutationObserver(function (mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                var type = mutations[i].type;
+                if (type === 'childList' || type === 'characterData') {
+                    needsTypeset = true;
+                    requestTypeset(host);
+                    break;
                 }
             }
-        };
+        });
+        observer.observe(host, {childList: true, subtree: true, characterData: true});
+        observedHost = host;
+    }
+
+    function ensureObserver(target) {
+        var host = target || document.getElementById(PREVIEW_ID);
+        if (!host || (typeof host.isConnected === 'boolean' && !host.isConnected)) {
+            observedHost = null;
+            if (observer) {
+                observer.disconnect();
+                observer = null;
+            }
+            scheduleHostCheck();
+            return;
+        }
+        if (observedHost !== host) {
+            observe(host);
+        }
+        if (needsTypeset) {
+            requestTypeset(host);
+        }
+    }
+
+    function onStartup() {
+        mathReady = true;
+        if (needsTypeset) {
+            requestTypeset();
+        }
+    }
+
+    function whenMathJaxReady() {
+        if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+            window.MathJax.startup.promise.then(function () {
+                onStartup();
+            }).catch(function (err) {
+                console.error('[mkviewer] MathJax 启动失败', err);
+            });
+        } else if (window.MathJax && window.MathJax.typesetPromise) {
+            onStartup();
+        }
     }
 
     function loadScript(doc) {
+        if (!doc) {
+            return;
+        }
         var existing = doc.getElementById(SCRIPT_ID);
         if (existing) {
-            if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-                window.MathJax.startup.promise.then(function () {
-                    markReady();
-                }).catch(function (err) {
-                    console.error('[mkviewer] MathJax 启动失败', err);
-                });
-            } else if (window.MathJax && window.MathJax.typesetPromise) {
-                markReady();
-            }
-            ensureHost();
+            whenMathJaxReady();
             return;
         }
         var head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
@@ -256,24 +266,14 @@ _MATHJAX_HEAD_TEMPLATE = """
             console.error('[mkviewer] MathJax 脚本加载失败', err);
         });
         script.addEventListener('load', function () {
-            if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-                window.MathJax.startup.promise.then(function () {
-                    markReady();
-                }).catch(function (err) {
-                    console.error('[mkviewer] MathJax 启动失败', err);
-                });
-            } else if (window.MathJax && window.MathJax.typesetPromise) {
-                markReady();
-            } else {
-                console.error('[mkviewer] MathJax 未暴露 typesetPromise');
-            }
+            whenMathJaxReady();
         });
         head.appendChild(script);
     }
 
     function init() {
         configure(window);
-        ensureHost();
+        ensureObserver();
         loadScript(document);
     }
 
@@ -282,9 +282,12 @@ _MATHJAX_HEAD_TEMPLATE = """
     } else {
         init();
     }
+
+    setInterval(ensureObserver, 2000);
 })();
 </script>
 """
+
 
 MATHJAX_HEAD = _MATHJAX_HEAD_TEMPLATE.replace("__MATHJAX_SRC__", MATHJAX_JS_URL)
 
