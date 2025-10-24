@@ -152,6 +152,34 @@ _MATHJAX_HEAD_TEMPLATE = """
         startup.typeset = false;
     }
 
+    function normalizeArithmatex(root) {
+        if (!root || !root.querySelectorAll) {
+            return;
+        }
+        var nodes = root.querySelectorAll('.arithmatex');
+        if (!nodes || !nodes.length) {
+            return;
+        }
+        for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            var text = el.textContent;
+            if (!text) {
+                continue;
+            }
+            var normalized = text
+                .replace(/\\\\\(/g, '\\(')
+                .replace(/\\\\\)/g, '\\)')
+                .replace(/\\\\\[/g, '\\[')
+                .replace(/\\\\\]/g, '\\]');
+            if (normalized !== text) {
+                while (el.firstChild) {
+                    el.removeChild(el.firstChild);
+                }
+                el.appendChild(document.createTextNode(normalized));
+            }
+        }
+    }
+
     function requestTypeset(host) {
         var target = host || document.getElementById(PREVIEW_ID);
         if (!target || (typeof target.isConnected === 'boolean' && !target.isConnected)) {
@@ -171,6 +199,7 @@ _MATHJAX_HEAD_TEMPLATE = """
             return;
         }
         pending = true;
+        normalizeArithmatex(target);
         window.MathJax.typesetPromise([target]).then(function () {
             pending = false;
             if (needsTypeset) {
