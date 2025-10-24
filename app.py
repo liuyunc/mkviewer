@@ -101,6 +101,11 @@ _MATHJAX_HEAD_TEMPLATE = """
         if (!options.processHtmlClass) {
             options.processHtmlClass = 'arithmatex|doc-preview-inner';
         }
+        var cfg = win.MathJax = win.MathJax || {};
+        var tex = cfg.tex = cfg.tex || {};
+        tex.inlineMath = tex.inlineMath || [['$', '$'], ['\\(', '\\)']];
+        tex.displayMath = tex.displayMath || [['$$', '$$'], ['\\[', '\\]']];
+        cfg.svg = cfg.svg || {fontCache: 'global'};
     }
 
     function warnFailure(err) {
