@@ -102,6 +102,11 @@ _MATHJAX_HEAD_TEMPLATE = """
         } catch (e) {
             return '未知错误';
         }
+        var cfg = win.MathJax = win.MathJax || {};
+        var tex = cfg.tex = cfg.tex || {};
+        tex.inlineMath = tex.inlineMath || [['$', '$'], ['\\(', '\\)']];
+        tex.displayMath = tex.displayMath || [['$$', '$$'], ['\\[', '\\]']];
+        cfg.svg = cfg.svg || {fontCache: 'global'};
     }
 
     function updateStatus(kind, message) {
