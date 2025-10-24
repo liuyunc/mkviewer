@@ -1387,7 +1387,7 @@ def ui_app():
                         btn_refresh = gr.Button("刷新树", variant="secondary")
                         btn_expand = gr.Button("展开全部")
                         btn_collapse = gr.Button("折叠全部")
-                        btn_clear = gr.Button("清空缓存")
+                    btn_clear = gr.Button("清空缓存")
                     gr.HTML("<div class='search-title'>全文搜索</div>", elem_classes=["search-title"])
                     with gr.Column(elem_classes=["search-stack"]):
                         q = gr.Textbox(
