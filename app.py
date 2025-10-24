@@ -95,9 +95,6 @@ _MATHJAX_HEAD_TEMPLATE = """
             banner.textContent = 'MathJax 脚本加载失败，请检查 MATHJAX_JS_URL 设置或镜像文件。';
             container.insertBefore(banner, container.firstChild || null);
         }
-        if (!options.skipHtmlTags) {
-            options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
-        }
         if (!options.processHtmlClass) {
             options.processHtmlClass = 'arithmatex|doc-preview-inner';
         }
@@ -180,8 +177,27 @@ _MATHJAX_HEAD_TEMPLATE = """
         }
         var cfg = win.MathJax = win.MathJax || {};
         var tex = cfg.tex = cfg.tex || {};
-        tex.inlineMath = tex.inlineMath || [['$', '$'], ['\\(', '\\)']];
-        tex.displayMath = tex.displayMath || [['$$', '$$'], ['\\[', '\\]']];
+        var inlinePairs = tex.inlineMath ? tex.inlineMath.slice() : [];
+        var displayPairs = tex.displayMath ? tex.displayMath.slice() : [];
+        function ensurePair(pairs, left, right, prepend) {
+            for (var i = 0; i < pairs.length; i++) {
+                if (pairs[i][0] === left && pairs[i][1] === right) {
+                    return pairs;
+                }
+            }
+            if (prepend) {
+                pairs.unshift([left, right]);
+            } else {
+                pairs.push([left, right]);
+            }
+            return pairs;
+        }
+        inlinePairs = ensurePair(inlinePairs, '$', '$', true);
+        inlinePairs = ensurePair(inlinePairs, '\(', '\)', false);
+        displayPairs = ensurePair(displayPairs, '$$', '$$', true);
+        displayPairs = ensurePair(displayPairs, '\[', '\]', false);
+        tex.inlineMath = inlinePairs;
+        tex.displayMath = displayPairs;
         tex.processEscapes = true;
         tex.processEnvironments = true;
         cfg.svg = cfg.svg || {fontCache: 'global'};
