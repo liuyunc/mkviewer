@@ -67,54 +67,97 @@ ES_ENABLED = bool(ES_HOSTS)
 # typesetter whenever the preview HTML changes.
 MATHJAX_HEAD = """
 <script>
-window.MathJax = window.MathJax || {};
-window.MathJax.tex = window.MathJax.tex || {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]};
-window.MathJax.svg = window.MathJax.svg || {fontCache: 'global'};
-window.MathJax.startup = Object.assign({typeset: false}, window.MathJax.startup || {});
+(function () {
+    window.MathJax = window.MathJax || {};
+    window.MathJax.tex = window.MathJax.tex || {inlineMath: [['$', '$'], ['\\(', '\\)']], displayMath: [['$$', '$$'], ['\\[', '\\]']]};
+    window.MathJax.svg = window.MathJax.svg || {fontCache: 'global'};
+    var startup = window.MathJax.startup || {};
+    if (!Object.prototype.hasOwnProperty.call(startup, 'typeset')) {
+        startup.typeset = false;
+    }
+    window.MathJax.startup = startup;
+})();
 </script>
 <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 <script>
-(function setupMathJaxObserver() {
-    const targetId = 'doc-html-view';
-    const ensureObserver = () => {
-        const target = document.getElementById(targetId);
-        if (!target) {
-            requestAnimationFrame(ensureObserver);
+(function () {
+    var targetId = 'doc-html-view';
+    var observer = null;
+    var scheduled = false;
+    var raf = window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); };
+    var targetNode = null;
+
+    function startWatching() {
+        if (!window.MutationObserver || !targetNode) {
+            scheduled = false;
             return;
         }
-        const trigger = () => {
-            if (window.MathJax && window.MathJax.typesetPromise) {
-                if (observer) {
-                    observer.disconnect();
-                }
-                window.MathJax.typesetPromise([target]).catch(() => {}).finally(() => {
-                    startWatching();
-                });
-            }
-        };
-        let observer;
-        let scheduled = false;
-        const schedule = () => {
-            if (scheduled) {
-                return;
-            }
-            scheduled = true;
-            requestAnimationFrame(() => {
-                scheduled = false;
-                trigger();
+        if (observer) {
+            observer.disconnect();
+        }
+        observer = new MutationObserver(function () {
+            schedule();
+        });
+        observer.observe(targetNode, {childList: true, subtree: true});
+        scheduled = false;
+    }
+
+    function runTypeset() {
+        scheduled = false;
+        if (!targetNode) {
+            return;
+        }
+        if (!(window.MathJax && window.MathJax.typesetPromise)) {
+            startWatching();
+            return;
+        }
+        if (observer) {
+            observer.disconnect();
+        }
+        var promise;
+        try {
+            promise = window.MathJax.typesetPromise([targetNode]);
+        } catch (err) {
+            promise = null;
+        }
+        if (promise && promise.then) {
+            promise.then(function () {
+                startWatching();
+            }, function () {
+                startWatching();
             });
+        } else {
+            startWatching();
+        }
+    }
+
+    function schedule() {
+        if (scheduled) {
+            return;
+        }
+        scheduled = true;
+        raf(function () {
+            runTypeset();
+        });
+    }
+
+    function ensureObserver() {
+        targetNode = document.getElementById(targetId);
+        if (!targetNode) {
+            raf(ensureObserver);
+            return;
+        }
+        window._mkviewerTypeset = function () {
+            runTypeset();
         };
-        const startWatching = () => {
-            if (observer) {
-                observer.disconnect();
-            }
-            observer = new MutationObserver(() => schedule());
-            observer.observe(target, {childList: true, subtree: true});
-        };
-        window._mkviewerTypeset = trigger;
+        if (!window.MutationObserver) {
+            runTypeset();
+            return;
+        }
         startWatching();
-        trigger();
-    };
+        runTypeset();
+    }
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', ensureObserver);
     } else {
@@ -771,9 +814,9 @@ body {
 }
 .gradio-container {
     background:transparent !important;
-    max-width:1320px;
+    max-width:1560px;
     margin:0 auto;
-    padding:12px 32px 48px;
+    padding:16px 40px 56px;
 }
 .gradio-container .block.padded {
     background:transparent;
@@ -917,14 +960,22 @@ body {
 .mkv-meta-link .mkv-link {
     white-space:nowrap;
 }
+.mkv-meta-link .mkv-link + .mkv-link {
+    margin-left:12px;
+}
 .gr-row {
     gap:24px !important;
 }
+.sidebar-col {
+    font-size:.92rem;
+}
 .sidebar-col .controls {
     display:flex;
-    gap:10px;
     flex-wrap:wrap;
     margin-bottom:12px;
+}
+.sidebar-col .controls > * + * {
+    margin-left:10px;
 }
 .sidebar-heading h3 {
     margin-bottom:12px !important;
@@ -933,7 +984,7 @@ body {
 }
 .sidebar-col .gr-button { min-width:104px; }
 .sidebar-col .status-bar {
-    margin:4px 0 8px;
+    margin:6px 0 0;
     color:var(--brand-muted);
     font-size:.9rem;
 }
@@ -947,13 +998,17 @@ body {
     align-self:flex-start;
 }
 .sidebar-tree {
-    padding:18px 20px;
+    padding:16px 18px;
     background:var(--brand-card);
     border-radius:var(--brand-radius);
     border:1px solid var(--brand-border);
     box-shadow:var(--brand-shadow);
     max-height:60vh;
     overflow:auto;
+}
+.sidebar-tree summary,
+.sidebar-tree .file {
+    font-size:.9rem;
 }
 .sidebar-tree::-webkit-scrollbar { width:8px; }
 .sidebar-tree::-webkit-scrollbar-thumb {
@@ -993,13 +1048,14 @@ body {
     border:1px solid var(--brand-border) !important;
     background:#f8fbff !important;
     padding:10px 16px !important;
-    font-size:.95rem !important;
+    font-size:.9rem !important;
     box-shadow:none !important;
 }
 .search-title {
     font-weight:600;
     color:var(--brand-muted);
-    margin:12px 0 6px;
+    margin:6px 0 4px;
+    font-size:.88rem;
     letter-spacing:.02em;
 }
 .search-stack {
@@ -1011,6 +1067,18 @@ body {
     width:100%;
     border-radius:16px !important;
     padding:10px 0 !important;
+}
+.reindex-stack {
+    display:flex;
+    flex-direction:column;
+    margin-top:8px;
+}
+.reindex-stack > * + * {
+    margin-top:8px;
+}
+.reindex-stack .gr-button {
+    align-self:flex-start;
+    min-width:130px;
 }
 .content-col {
     display:flex;
@@ -1313,24 +1381,22 @@ def _hero_html(doc_total: Optional[int] = None) -> str:
     else:
         total_span = f"<span>文档总数：<strong>{doc_total}</strong></span>"
     meta_items = [total_span]
-    feedback_link = (
-        "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' "
-        "target='_blank' rel='noopener'>文档问题反馈</a>"
-    )
+    feedback_links = [
+        (
+            "<a class='mkv-link mkv-feedback-link' href='http://10.20.41.24:9001/' "
+            "target='_blank' rel='noopener'>文档问题反馈</a>"
+        ),
+        (
+            "<a class='mkv-link mkv-feedback-link' href='http://10.20.40.101:7860/' "
+            "target='_blank' rel='noopener'>通号院在线扫描类 PDF 解析工具</a>"
+        ),
+    ]
+    feedback_link = "".join(feedback_links)
     return (
         f"""
-        <header class='mkv-topbar'>
-            <div class='mkv-brand'>
-                <span class='mkv-logo'>MK</span>
-                <div>
-                    <div class='mkv-brand-title'>{_esc(SITE_TITLE)}</div>
-                    <div class='mkv-brand-subtitle'>MinIO 文档知识库</div>
-                </div>
-            </div>
-        </header>
         <section class='mkv-hero'>
             <h1>{_esc(SITE_TITLE)}</h1>
-            <p>在这里浏览、检索和预览来自 MinIO 的知识文档，快速定位你需要的内容。</p>
+            <p>在这里浏览、检索来自通号院的知识文档，快速定位你需要的工作内容。</p>
             <div class='mkv-meta-bar'>
                 <div class='mkv-meta'>{''.join(meta_items)}</div>
                 <div class='mkv-meta-link'>{feedback_link}</div>
@@ -1362,26 +1428,27 @@ def ui_app():
         gr.HTML(GLOBAL_CSS + TREE_CSS)
         hero_html = gr.HTML(_hero_html())
         with gr.Row(elem_classes=["gr-row"]):
-            with gr.Column(scale=1, min_width=340, elem_classes=["sidebar-col"]):
+            with gr.Column(scale=1, min_width=280, elem_classes=["sidebar-col"]):
                 with gr.Column(elem_classes=["sidebar-sticky"]):
                     gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
                     with gr.Row(elem_classes=["controls"]):
-                        btn_refresh = gr.Button("刷新树", variant="secondary")
                         btn_expand = gr.Button("展开全部")
                         btn_collapse = gr.Button("折叠全部")
-                        btn_clear = gr.Button("清空缓存")
-                        btn_reindex = gr.Button("重建索引", variant="secondary")
-                    status_bar = gr.HTML("", elem_classes=["status-bar"])
-                    tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
-                    gr.HTML("<div class='search-title'>全文搜索</div>", elem_classes=["search-title"])
                     with gr.Column(elem_classes=["search-stack"]):
                         q = gr.Textbox(
                             show_label=False,
-                            placeholder="输入关键字… 然后回车或点搜索",
+                            placeholder="支持全文搜索",
                             elem_classes=["search-input"],
                         )
                         btn_search = gr.Button("搜索", elem_classes=["search-button"])
-            with gr.Column(scale=5, elem_classes=["content-col"]):
+                    tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
+                    with gr.Row(elem_classes=["controls"]):
+                        btn_clear = gr.Button("清空缓存")
+                        btn_refresh = gr.Button("刷新树", variant="secondary")
+                    with gr.Column(elem_classes=["reindex-stack"]):
+                        btn_reindex = gr.Button("重建索引", variant="secondary")
+                        status_bar = gr.HTML("", elem_classes=["status-bar"])
+            with gr.Column(scale=7, elem_classes=["content-col"]):
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
                     with gr.TabItem("目录", id="toc"):
                         toc_panel = gr.HTML(
