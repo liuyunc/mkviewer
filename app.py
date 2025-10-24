@@ -51,6 +51,7 @@ MATHJAX_JS_URL = os.getenv(
     "MATHJAX_JS_URL",
     "http://10.20.41.24:9005/cdn/mathjax@3/es5/tex-mml-chtml.js",
 )
+ENABLE_GRADIO_QUEUE = os.getenv("ENABLE_GRADIO_QUEUE", "false").strip().lower() == "true"
 ES_HOSTS = [h.strip() for h in os.getenv("ES_HOSTS", "http://localhost:9200").split(",") if h.strip()]
 ES_INDEX = os.getenv("ES_INDEX", "mkviewer-docs")
 ES_USERNAME = os.getenv("ES_USERNAME", "")
@@ -66,145 +67,219 @@ if ES_MAX_ANALYZED_OFFSET <= 0:
 
 ES_ENABLED = bool(ES_HOSTS)
 
-# Inject MathJax and a resilient typesetting helper so formulas render even when
-# the initial HTML update happens before the MathJax bundle is ready.  The
-# helper uses MutationObserver as well as a retry timer to ensure the preview is
-# re-typeset once the script finishes downloading.
+# Inject MathJax with a focused bootstrap that waits for the library to finish
+# loading before typesetting and observes preview updates so formulas refresh
+# whenever the rendered document changes.
 _MATHJAX_HEAD_TEMPLATE = """
 <script>
 (function () {
-    var config = window.MathJax = window.MathJax || {};
-    config.tex = config.tex || {
-        inlineMath: [['$', '$'], ['\\(', '\\)']],
-        displayMath: [['$$', '$$'], ['\\[', '\\]']]
-    };
-    config.svg = config.svg || {fontCache: 'global'};
-    var startup = config.startup || {};
-    startup.typeset = false;
-    config.startup = startup;
-})();
-</script>
-<script defer src="__MATHJAX_SRC__"></script>
-<script>
-(function () {
-    var targetId = 'doc-html-view';
+    var SCRIPT_ID = 'mkv-mathjax-script';
+    var PREVIEW_ID = 'doc-html-view';
+    var SRC = '__MATHJAX_SRC__';
     var observer = null;
-    var scheduled = false;
-    var raf = window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); };
-    var targetNode = null;
-    var retryTimer = null;
+    var observedHost = null;
+    var ready = false;
+    var pending = false;
+    var needsTypeset = true;
 
-    function disconnectObserver() {
+    function getHost() {
+        var host = document.getElementById(PREVIEW_ID);
+        if (host && typeof host.isConnected === 'boolean' && !host.isConnected) {
+            return null;
+        }
+        return host;
+    }
+
+    function queueTypeset(target) {
+        var host = target || getHost();
+        if (!host) {
+            needsTypeset = true;
+            requestAnimationFrame(ensureHost);
+            return;
+        }
+        if (observedHost !== host) {
+            attachObserver(host);
+        }
+        if (!ready || !(window.MathJax && window.MathJax.typesetPromise)) {
+            needsTypeset = true;
+            return;
+        }
+        needsTypeset = false;
+        if (pending) {
+            return;
+        }
+        pending = true;
+        requestAnimationFrame(function () {
+            window.MathJax.typesetPromise([host]).then(function () {
+                pending = false;
+            }, function (err) {
+                pending = false;
+                console.error('[mkviewer] MathJax 渲染失败', err);
+            });
+        });
+    }
+
+    function attachObserver(host) {
+        if (!host || !window.MutationObserver) {
+            return;
+        }
         if (observer) {
             observer.disconnect();
         }
-    }
-
-    function startWatching() {
-        if (!window.MutationObserver || !targetNode) {
-            return;
-        }
-        disconnectObserver();
-        observer = new MutationObserver(function () {
-            schedule();
+        observer = new MutationObserver(function (mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                if (mutations[i].type === 'childList' || mutations[i].type === 'subtree') {
+                    queueTypeset(host);
+                    break;
+                }
+            }
         });
-        observer.observe(targetNode, {childList: true, subtree: true});
+        observer.observe(host, {childList: true, subtree: true});
+        observedHost = host;
     }
 
-    function runTypeset() {
-        scheduled = false;
-        if (!targetNode) {
+    function ensureHost() {
+        var host = getHost();
+        if (!host) {
+            requestAnimationFrame(ensureHost);
             return;
         }
-        if (!(window.MathJax && window.MathJax.typesetPromise)) {
-            if (retryTimer) {
-                clearTimeout(retryTimer);
+        if (observedHost !== host) {
+            attachObserver(host);
+        }
+        if (needsTypeset) {
+            queueTypeset(host);
+        }
+    }
+
+    function markReady() {
+        ready = true;
+        queueTypeset();
+    }
+
+    function configure(win) {
+        if (!win) {
+            return;
+        }
+        var cfg = win.MathJax = win.MathJax || {};
+        var tex = cfg.tex = cfg.tex || {};
+        var inlinePairs = tex.inlineMath ? tex.inlineMath.slice() : [];
+        var displayPairs = tex.displayMath ? tex.displayMath.slice() : [];
+        function ensurePair(pairs, left, right, prepend) {
+            for (var i = 0; i < pairs.length; i++) {
+                if (pairs[i][0] === left && pairs[i][1] === right) {
+                    return pairs;
+                }
             }
-            retryTimer = setTimeout(runTypeset, 200);
-            return;
+            if (prepend) {
+                pairs.unshift([left, right]);
+            } else {
+                pairs.push([left, right]);
+            }
+            return pairs;
         }
-        disconnectObserver();
-        var promise;
-        try {
-            promise = window.MathJax.typesetPromise([targetNode]);
-        } catch (err) {
-            promise = null;
+        inlinePairs = ensurePair(inlinePairs, '$', '$', true);
+        inlinePairs = ensurePair(inlinePairs, '\(', '\)', false);
+        displayPairs = ensurePair(displayPairs, '$$', '$$', true);
+        displayPairs = ensurePair(displayPairs, '\[', '\]', false);
+        tex.inlineMath = inlinePairs;
+        tex.displayMath = displayPairs;
+        tex.processEscapes = true;
+        tex.processEnvironments = true;
+        cfg.svg = cfg.svg || {fontCache: 'global'};
+        var options = cfg.options = cfg.options || {};
+        if (!options.ignoreHtmlClass) {
+            options.ignoreHtmlClass = 'tex2jax_ignore';
         }
-        if (promise && promise.then) {
-            promise.finally(function () {
-                startWatching();
-            });
+        var processClass = options.processHtmlClass || '';
+        var requiredClasses = ['doc-preview-inner', 'docx-preview', 'arithmatex'];
+        if (processClass) {
+            var seen = processClass.split('|');
+            for (var i = 0; i < requiredClasses.length; i++) {
+                if (seen.indexOf(requiredClasses[i]) === -1) {
+                    seen.push(requiredClasses[i]);
+                }
+            }
+            processClass = seen.join('|');
         } else {
-            startWatching();
+            processClass = requiredClasses.join('|');
         }
-    }
-
-    function schedule() {
-        if (scheduled) {
-            return;
+        options.processHtmlClass = processClass;
+        if (!options.skipHtmlTags) {
+            options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
         }
-        scheduled = true;
-        raf(runTypeset);
-    }
-
-    function ensureTarget() {
-        targetNode = document.getElementById(targetId);
-        if (!targetNode) {
-            raf(ensureTarget);
-            return;
-        }
-        startWatching();
-        schedule();
-    }
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', ensureTarget);
-    } else {
-        ensureTarget();
-    }
-
-    if (window.MathJax) {
-        var startup = window.MathJax.startup = window.MathJax.startup || {};
-        var previousReady = typeof startup.ready === 'function' ? startup.ready : null;
+        var startup = cfg.startup = cfg.startup || {};
+        startup.typeset = false;
+        var originalReady = typeof startup.ready === 'function' ? startup.ready : null;
         startup.ready = function () {
-            var result = null;
-            if (previousReady) {
+            if (this && this.startup && typeof this.startup.defaultReady === 'function') {
+                this.startup.defaultReady();
+            }
+            markReady();
+            if (originalReady) {
                 try {
-                    result = previousReady.apply(this, arguments);
+                    originalReady.apply(this, arguments);
                 } catch (err) {
-                    result = null;
-                }
-            } else if (typeof startup.defaultReady === 'function') {
-                try {
-                    result = startup.defaultReady();
-                } catch (err) {
-                    result = null;
+                    console.error('[mkviewer] MathJax 自定义启动回调失败', err);
                 }
             }
-
-            if (result && typeof result.then === 'function') {
-                if (typeof result.finally === 'function') {
-                    return result.finally(schedule);
-                }
-                return result.then(function (value) {
-                    schedule();
-                    return value;
-                }, function (reason) {
-                    schedule();
-                    throw reason;
-                });
-            }
-
-            schedule();
-            return result;
         };
     }
 
-    setTimeout(function () {
-        if (!(window.MathJax && window.MathJax.typesetPromise)) {
-            console.warn('[mkviewer] MathJax 脚本尚未加载，若长时间无响应，请配置 MATHJAX_JS_URL 以使用内网镜像。');
+    function loadScript(doc) {
+        var existing = doc.getElementById(SCRIPT_ID);
+        if (existing) {
+            if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+                window.MathJax.startup.promise.then(function () {
+                    markReady();
+                }).catch(function (err) {
+                    console.error('[mkviewer] MathJax 启动失败', err);
+                });
+            } else if (window.MathJax && window.MathJax.typesetPromise) {
+                markReady();
+            }
+            ensureHost();
+            return;
         }
-    }, 6000);
+        var head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
+        if (!head) {
+            console.error('[mkviewer] 找不到 <head> 元素，无法加载 MathJax');
+            return;
+        }
+        var script = doc.createElement('script');
+        script.id = SCRIPT_ID;
+        script.src = SRC;
+        script.async = true;
+        script.addEventListener('error', function (err) {
+            console.error('[mkviewer] MathJax 脚本加载失败', err);
+        });
+        script.addEventListener('load', function () {
+            if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
+                window.MathJax.startup.promise.then(function () {
+                    markReady();
+                }).catch(function (err) {
+                    console.error('[mkviewer] MathJax 启动失败', err);
+                });
+            } else if (window.MathJax && window.MathJax.typesetPromise) {
+                markReady();
+            } else {
+                console.error('[mkviewer] MathJax 未暴露 typesetPromise');
+            }
+        });
+        head.appendChild(script);
+    }
+
+    function init() {
+        configure(window);
+        ensureHost();
+        loadScript(document);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
 })();
 </script>
 """
@@ -551,7 +626,21 @@ SUPPORTED_EXTS = {
     ".docx": "docx",
     ".doc": "doc",
 }
-MARKDOWN_EXTENSIONS = ["fenced_code", "tables", "codehilite", "toc"]
+MARKDOWN_EXTENSIONS = [
+    "fenced_code",
+    "tables",
+    "codehilite",
+    "toc",
+    "pymdownx.arithmatex",
+]
+MARKDOWN_EXTENSION_CONFIGS = {
+    "toc": {"permalink": False},
+    "pymdownx.arithmatex": {
+        "generic": True,
+        "tex_inline_wrap": [r"\(", r"\)"],
+        "tex_block_wrap": [r"\[", r"\]"],
+    },
+}
 #IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
 
 
@@ -668,9 +757,10 @@ def list_documents() -> List[Dict[str, str]]:
 
 def _plain_text_html(text: str) -> str:
     if not text.strip():
-        return "<div class='doc-preview'><em>文档为空</em></div>"
+        return "<div class='doc-preview-inner doc-preview-empty'><em>文档为空</em></div>"
     esc = _esc(text)
-    return "<div class='doc-preview'>" + esc.replace("\n", "<br>") + "</div>"
+    return "<div class='doc-preview-inner'>" + esc.replace("\n", "<br>") + "</div>"
+
 
 
 def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, str, str, str]:
@@ -696,10 +786,13 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     if doc_type == "markdown":
         text = data.decode("utf-8", errors="ignore")
         text2 = rewrite_image_links(text)
-        md_renderer = Markdown(extensions=MARKDOWN_EXTENSIONS, extension_configs={"toc": {"permalink": False}})
+        md_renderer = Markdown(
+            extensions=MARKDOWN_EXTENSIONS,
+            extension_configs=MARKDOWN_EXTENSION_CONFIGS,
+        )
         rendered = md_renderer.convert(text2)
         toc_html = _render_markdown_toc(getattr(md_renderer, "toc_tokens", []))
-        html = "<div class='markdown-body'>" + rendered + "</div>"
+        html = "<div class='doc-preview-inner markdown-body'>" + rendered + "</div>"
     elif doc_type == "docx":
         text, html = _docx_from_bytes(data)
     elif doc_type == "doc":
@@ -1287,13 +1380,17 @@ body {
     box-shadow:var(--brand-shadow);
 }
 .doc-preview {
-    padding:0;
+    padding:20px 22px;
     margin:0;
     line-height:1.72;
     font-size:1rem;
+    box-sizing:border-box;
 }
-.doc-preview #doc-html-view {
-    padding:20px 22px;
+.doc-preview-inner {
+    min-height:1rem;
+}
+.doc-preview-empty {
+    color:var(--brand-muted);
 }
 .plaintext-view textarea {
     min-height:420px !important;
@@ -1361,6 +1458,15 @@ body {
     padding-left:12px;
     color:var(--brand-muted);
 }
+.markdown-body .arithmatex {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"] {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"][display="true"] {
+    margin:1.2em 0 !important;
+}
 @media (max-width:1100px) {
     .gradio-container {
         padding:12px 18px 40px;
@@ -1404,6 +1510,15 @@ TREE_CSS = """
     margin-left:0;
     padding-left:12px;
     color:var(--brand-muted);
+}
+.markdown-body .arithmatex {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"] {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"][display="true"] {
+    margin:1.2em 0 !important;
 }
 </style>
 """
@@ -1577,7 +1692,11 @@ def ui_app():
                         )
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
-                        html_view = gr.HTML("<em>请选择左侧文件…</em>", elem_id="doc-html-view", elem_classes=["doc-preview"])
+                        html_view = gr.HTML(
+                            "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
+                            elem_id="doc-html-view",
+                            elem_classes=["doc-preview"],
+                        )
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
                     with gr.TabItem("全文搜索", id="search"):
@@ -1646,7 +1765,6 @@ def ui_app():
         btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_clear.click(_clear_cache, outputs=status_bar)
         btn_reindex.click(_force_reindex, outputs=status_bar)
-
         q.submit(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
         btn_search.click(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
 
@@ -1660,7 +1778,8 @@ def ui_app():
 
 if __name__ == "__main__":
     demo = ui_app()
-    demo = demo.queue()
+    if ENABLE_GRADIO_QUEUE:
+        demo = demo.queue()
     app = demo
     fastapi_app = demo.app
 
