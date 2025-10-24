@@ -67,11 +67,9 @@ if ES_MAX_ANALYZED_OFFSET <= 0:
 
 ES_ENABLED = bool(ES_HOSTS)
 
-# Inject MathJax with a lightweight observer that re-typesets the preview when
-# the rendered HTML changes.  The helper keeps a short queue so updates that
-# arrive before MathJax finishes booting are rendered once the library is
-# ready, and the MutationObserver only watches direct child changes to avoid
-# feedback loops when MathJax mutates the DOM.
+# Inject MathJax with a focused bootstrap that waits for the library to finish
+# loading before typesetting, observes preview updates, and surfaces a clear
+# error banner when the locally hosted script is unavailable.
 _MATHJAX_HEAD_TEMPLATE = """
 <script>
 (function () {
@@ -79,10 +77,10 @@ _MATHJAX_HEAD_TEMPLATE = """
     var PREVIEW_ID = 'doc-html-view';
     var SRC = '__MATHJAX_SRC__';
     var observer = null;
-    var observedTarget = null;
-    var pending = false;
+    var observedHost = null;
     var ready = false;
-    var queuedTarget = null;
+    var pending = false;
+    var needsTypeset = true;
 
     function showFailure(err) {
         console.error('[mkviewer] MathJax 脚本加载失败：' + SRC, err);
@@ -100,9 +98,6 @@ _MATHJAX_HEAD_TEMPLATE = """
         if (!options.skipHtmlTags) {
             options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
         }
-        if (!options.skipHtmlTags) {
-            options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
-        }
         if (!options.processHtmlClass) {
             options.processHtmlClass = 'arithmatex|doc-preview-inner';
         }
@@ -113,28 +108,29 @@ _MATHJAX_HEAD_TEMPLATE = """
         cfg.svg = cfg.svg || {fontCache: 'global'};
     }
 
-    function schedule(target) {
-        var host = target || document.getElementById(PREVIEW_ID);
+    function getHost() {
+        var host = document.getElementById(PREVIEW_ID);
         if (host && typeof host.isConnected === 'boolean' && !host.isConnected) {
-            host = document.getElementById(PREVIEW_ID);
+            return null;
         }
-        if (host && observedTarget !== host) {
-            observe(host);
-        }
+        return host;
+    }
+
+    function typeset(target) {
+        var host = target || getHost();
         if (!host) {
-            if (!ready) {
-                queuedTarget = null;
-            }
+            needsTypeset = true;
+            requestAnimationFrame(ensureHost);
             return;
         }
-        if (!ready) {
-            queuedTarget = host;
+        if (observedHost !== host) {
+            attachObserver(host);
+        }
+        if (!ready || !(window.MathJax && window.MathJax.typesetPromise)) {
+            needsTypeset = true;
             return;
         }
-        queuedTarget = null;
-        if (!(window.MathJax && window.MathJax.typesetPromise)) {
-            return;
-        }
+        needsTypeset = false;
         if (pending) {
             return;
         }
@@ -147,8 +143,8 @@ _MATHJAX_HEAD_TEMPLATE = """
         });
     }
 
-    function observe(target) {
-        if (!(window.MutationObserver && target)) {
+    function attachObserver(host) {
+        if (!host || !window.MutationObserver) {
             return;
         }
         if (observer) {
@@ -157,23 +153,25 @@ _MATHJAX_HEAD_TEMPLATE = """
         observer = new MutationObserver(function (mutations) {
             for (var i = 0; i < mutations.length; i++) {
                 if (mutations[i].type === 'childList') {
-                    schedule(target);
+                    typeset(host);
                     break;
                 }
             }
         });
-        observer.observe(target, {childList: true});
-        observedTarget = target;
+        observer.observe(host, {childList: true});
+        observedHost = host;
     }
 
-    function initObserver() {
-        var host = document.getElementById(PREVIEW_ID);
+    function ensureHost() {
+        var host = getHost();
         if (!host) {
-            requestAnimationFrame(initObserver);
+            requestAnimationFrame(ensureHost);
             return;
         }
-        observe(host);
-        schedule(host);
+        attachObserver(host);
+        if (needsTypeset) {
+            typeset(host);
+        }
     }
 
     function configure(win) {
@@ -184,16 +182,21 @@ _MATHJAX_HEAD_TEMPLATE = """
         var tex = cfg.tex = cfg.tex || {};
         tex.inlineMath = tex.inlineMath || [['$', '$'], ['\\(', '\\)']];
         tex.displayMath = tex.displayMath || [['$$', '$$'], ['\\[', '\\]']];
-        tex.processEscapes = tex.processEscapes !== false;
-        tex.processEnvironments = tex.processEnvironments !== false;
+        tex.processEscapes = true;
+        tex.processEnvironments = true;
         cfg.svg = cfg.svg || {fontCache: 'global'};
         var options = cfg.options = cfg.options || {};
         if (!options.ignoreHtmlClass) {
             options.ignoreHtmlClass = 'tex2jax_ignore';
         }
-        if (!options.processHtmlClass) {
-            options.processHtmlClass = 'arithmatex|doc-preview-inner';
+        var processClass = options.processHtmlClass || '';
+        if (processClass.indexOf('doc-preview-inner') === -1) {
+            processClass = processClass ? processClass + '|doc-preview-inner' : 'doc-preview-inner';
         }
+        if (processClass.indexOf('arithmatex') === -1) {
+            processClass += '|arithmatex';
+        }
+        options.processHtmlClass = processClass;
         if (!options.skipHtmlTags) {
             options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
         }
@@ -204,6 +207,8 @@ _MATHJAX_HEAD_TEMPLATE = """
             if (this && this.startup && typeof this.startup.defaultReady === 'function') {
                 this.startup.defaultReady();
             }
+            ready = true;
+            typeset();
             if (originalReady) {
                 try {
                     originalReady.apply(this, arguments);
@@ -211,8 +216,6 @@ _MATHJAX_HEAD_TEMPLATE = """
                     console.error('[mkviewer] MathJax 自定义启动回调失败', err);
                 }
             }
-            ready = true;
-            schedule(queuedTarget || document.getElementById(PREVIEW_ID));
         };
     }
 
@@ -220,9 +223,17 @@ _MATHJAX_HEAD_TEMPLATE = """
         var existing = doc.getElementById(SCRIPT_ID);
         if (existing) {
             if (existing.getAttribute('data-mkv-loaded') === '1' && window.MathJax && window.MathJax.typesetPromise) {
-                ready = true;
-                schedule(queuedTarget || document.getElementById(PREVIEW_ID));
+                if (window.MathJax.startup && window.MathJax.startup.promise) {
+                    window.MathJax.startup.promise.then(function () {
+                        ready = true;
+                        typeset();
+                    });
+                } else {
+                    ready = true;
+                    typeset();
+                }
             }
+            ensureHost();
             return;
         }
         var head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
@@ -242,25 +253,29 @@ _MATHJAX_HEAD_TEMPLATE = """
             if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
                 window.MathJax.startup.promise.then(function () {
                     ready = true;
-                    schedule(queuedTarget || document.getElementById(PREVIEW_ID));
+                    typeset();
                 }).catch(function (err) {
                     showFailure(err);
                 });
             } else if (window.MathJax) {
                 ready = true;
-                schedule(queuedTarget || document.getElementById(PREVIEW_ID));
+                typeset();
             }
         });
         head.appendChild(script);
     }
 
-    configure(window);
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', initObserver);
-    } else {
-        initObserver();
+    function init() {
+        configure(window);
+        ensureHost();
+        loadScript(document);
     }
-    loadScript(document);
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
 })();
 </script>
 """
