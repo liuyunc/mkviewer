@@ -103,6 +103,9 @@ _MATHJAX_HEAD_TEMPLATE = """
         if (!options.skipHtmlTags) {
             options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
         }
+        if (!options.skipHtmlTags) {
+            options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
+        }
         if (!options.processHtmlClass) {
             options.processHtmlClass = 'arithmatex|doc-preview-inner';
         }
@@ -1675,7 +1678,7 @@ def ui_app():
                         )
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
-                        html_view = gr.Markdown(
+                        html_view = gr.HTML(
                             "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
                             elem_id="doc-html-view",
                             elem_classes=["doc-preview"],
