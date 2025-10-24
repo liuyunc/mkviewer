@@ -51,6 +51,7 @@ MATHJAX_JS_URL = os.getenv(
     "MATHJAX_JS_URL",
     "http://10.20.41.24:9005/cdn/mathjax@3/es5/tex-mml-chtml.js",
 )
+ENABLE_GRADIO_QUEUE = os.getenv("ENABLE_GRADIO_QUEUE", "false").strip().lower() == "true"
 ES_HOSTS = [h.strip() for h in os.getenv("ES_HOSTS", "http://localhost:9200").split(",") if h.strip()]
 ES_INDEX = os.getenv("ES_INDEX", "mkviewer-docs")
 ES_USERNAME = os.getenv("ES_USERNAME", "")
@@ -80,6 +81,9 @@ _MATHJAX_HEAD_TEMPLATE = """
     var host = null;
     var observer = null;
     var PROCESS_ATTR = 'data-mathjax-processing';
+    var PENDING = [];
+    var scriptReady = false;
+    var scriptFailed = false;
 
     function configure(win) {
         if (!win) {
@@ -90,13 +94,61 @@ _MATHJAX_HEAD_TEMPLATE = """
         tex.inlineMath = tex.inlineMath || [['$', '$'], ['\\(', '\\)']];
         tex.displayMath = tex.displayMath || [['$$', '$$'], ['\\[', '\\]']];
         cfg.svg = cfg.svg || {fontCache: 'global'};
+        var options = cfg.options = cfg.options || {};
+        if (!options.ignoreHtmlClass) {
+            options.ignoreHtmlClass = 'tex2jax_ignore';
+        }
+        if (!options.processHtmlClass) {
+            options.processHtmlClass = 'arithmatex|doc-preview-inner';
+        }
+        var cfg = win.MathJax = win.MathJax || {};
+        var tex = cfg.tex = cfg.tex || {};
+        tex.inlineMath = tex.inlineMath || [['$', '$'], ['\\(', '\\)']];
+        tex.displayMath = tex.displayMath || [['$$', '$$'], ['\\[', '\\]']];
+        cfg.svg = cfg.svg || {fontCache: 'global'};
+    }
+
+    function warnFailure(err) {
+        scriptFailed = true;
+        console.error('[mkviewer] MathJax 脚本加载失败：' + SRC, err);
+        var container = document.getElementById(PREVIEW_ID);
+        if (container) {
+            var banner = container.querySelector('.mathjax-error-banner');
+            if (!banner) {
+                banner = document.createElement('div');
+                banner.className = 'mathjax-error-banner';
+                banner.textContent = 'MathJax 脚本加载失败，请检查 MATHJAX_JS_URL 设置或镜像文件。';
+                container.insertBefore(banner, container.firstChild || null);
+            }
+        }
+    }
+
+    function onScriptReady() {
+        if (scriptReady) {
+            return;
+        }
+        scriptReady = true;
+        configure(window);
+        flushPending();
     }
 
     function ensureScript(doc) {
         if (!doc) {
             return;
         }
-        if (doc.getElementById(SCRIPT_ID)) {
+        var existing = doc.getElementById(SCRIPT_ID);
+        if (existing) {
+            if (!existing.getAttribute('data-mkv-bound')) {
+                existing.setAttribute('data-mkv-bound', '1');
+                existing.addEventListener('load', function () {
+                    existing.setAttribute('data-loaded', '1');
+                    onScriptReady();
+                });
+                existing.addEventListener('error', warnFailure);
+            }
+            if (existing.getAttribute('data-loaded') === '1') {
+                onScriptReady();
+            }
             return;
         }
         var head = doc.head || doc.getElementsByTagName('head')[0] || doc.documentElement;
@@ -106,12 +158,38 @@ _MATHJAX_HEAD_TEMPLATE = """
         var script = doc.createElement('script');
         script.id = SCRIPT_ID;
         script.setAttribute('defer', 'defer');
+        script.setAttribute('data-mkv-bound', '1');
         script.src = SRC;
+        script.addEventListener('load', function () {
+            script.setAttribute('data-loaded', '1');
+            onScriptReady();
+        });
+        script.addEventListener('error', warnFailure);
         head.appendChild(script);
     }
 
-    function typeset(target) {
+    function remember(target) {
         if (!target) {
+            return;
+        }
+        if (PENDING.indexOf(target) === -1) {
+            PENDING.push(target);
+        }
+    }
+
+    function flushPending() {
+        if (!PENDING.length) {
+            return;
+        }
+        var nodes = PENDING.slice();
+        PENDING.length = 0;
+        nodes.forEach(function (node) {
+            typeset(node);
+        });
+    }
+
+    function typeset(target) {
+        if (!target || scriptFailed) {
             return;
         }
         if (target.getAttribute(PROCESS_ATTR) === '1') {
@@ -119,9 +197,12 @@ _MATHJAX_HEAD_TEMPLATE = """
         }
         var math = window.MathJax;
         if (!(math && math.typesetPromise)) {
-            setTimeout(function () {
-                typeset(target);
-            }, 150);
+            remember(target);
+            if (scriptReady) {
+                setTimeout(function () {
+                    typeset(target);
+                }, 120);
+            }
             return;
         }
         target.setAttribute(PROCESS_ATTR, '1');
@@ -163,7 +244,7 @@ _MATHJAX_HEAD_TEMPLATE = """
         if (timer) {
             clearTimeout(timer);
         }
-        timer = setTimeout(resolveHost, 200);
+        timer = setTimeout(resolveHost, 160);
     }
 
     function resolveHost() {
@@ -181,6 +262,10 @@ _MATHJAX_HEAD_TEMPLATE = """
             host = next;
             watch(host);
             typeset(host);
+            return queueCheck();
+        }
+        if (scriptReady && PENDING.length) {
+            flushPending();
         }
         queueCheck();
     }
@@ -195,9 +280,12 @@ _MATHJAX_HEAD_TEMPLATE = """
     }
 
     setTimeout(function () {
+        if (scriptFailed) {
+            return;
+        }
         var math = window.MathJax;
         if (!(math && math.typesetPromise)) {
-            console.warn('[mkviewer] MathJax 脚本尚未加载，若长时间无响应，请配置 MATHJAX_JS_URL 以使用内网镜像。');
+            console.warn('[mkviewer] MathJax 脚本尚未加载，若长时间无响应，请确认 MATHJAX_JS_URL 是否可访问：' + SRC);
         }
     }, 6000);
 })();
@@ -1311,6 +1399,16 @@ body {
 .doc-preview-empty {
     color:var(--brand-muted);
 }
+.mathjax-error-banner {
+    margin-bottom:16px;
+    padding:12px 16px;
+    border-radius:14px;
+    background:rgba(220, 38, 38, 0.12);
+    border:1px solid rgba(220, 38, 38, 0.22);
+    color:#991b1b;
+    font-size:.95rem;
+    line-height:1.6;
+}
 .plaintext-view textarea {
     min-height:420px !important;
     font-family:"Fira Code","JetBrains Mono","SFMono-Regular",Consolas,monospace !important;
@@ -1698,7 +1796,8 @@ def ui_app():
 
 if __name__ == "__main__":
     demo = ui_app()
-    demo = demo.queue()
+    if ENABLE_GRADIO_QUEUE:
+        demo = demo.queue()
     app = demo
     fastapi_app = demo.app
 
