@@ -163,18 +163,41 @@ _MATHJAX_HEAD_TEMPLATE = """
         ensureTarget();
     }
 
-    if (window.MathJax && window.MathJax.startup) {
-        var startup = window.MathJax.startup;
-        var previousReady = startup.ready;
+    if (window.MathJax) {
+        var startup = window.MathJax.startup = window.MathJax.startup || {};
+        var previousReady = typeof startup.ready === 'function' ? startup.ready : null;
         startup.ready = function () {
-            if (typeof previousReady === 'function') {
+            var result = null;
+            if (previousReady) {
                 try {
-                    previousReady.apply(this, arguments);
-                } catch (err) {}
+                    result = previousReady.apply(this, arguments);
+                } catch (err) {
+                    result = null;
+                }
+            } else if (typeof startup.defaultReady === 'function') {
+                try {
+                    result = startup.defaultReady();
+                } catch (err) {
+                    result = null;
+                }
             }
+
+            if (result && typeof result.then === 'function') {
+                if (typeof result.finally === 'function') {
+                    return result.finally(schedule);
+                }
+                return result.then(function (value) {
+                    schedule();
+                    return value;
+                }, function (reason) {
+                    schedule();
+                    throw reason;
+                });
+            }
+
             schedule();
+            return result;
         };
-        window.MathJax.startup = startup;
     }
 
     setTimeout(function () {
