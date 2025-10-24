@@ -551,7 +551,21 @@ SUPPORTED_EXTS = {
     ".docx": "docx",
     ".doc": "doc",
 }
-MARKDOWN_EXTENSIONS = ["fenced_code", "tables", "codehilite", "toc"]
+MARKDOWN_EXTENSIONS = [
+    "fenced_code",
+    "tables",
+    "codehilite",
+    "toc",
+    "pymdownx.arithmatex",
+]
+MARKDOWN_EXTENSION_CONFIGS = {
+    "toc": {"permalink": False},
+    "pymdownx.arithmatex": {
+        "generic": True,
+        "tex_inline_wrap": ["\\(", "\\)"],
+        "tex_block_wrap": ["\\[", "\\]"],
+    },
+}
 #IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
 
 
@@ -696,7 +710,10 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     if doc_type == "markdown":
         text = data.decode("utf-8", errors="ignore")
         text2 = rewrite_image_links(text)
-        md_renderer = Markdown(extensions=MARKDOWN_EXTENSIONS, extension_configs={"toc": {"permalink": False}})
+        md_renderer = Markdown(
+            extensions=MARKDOWN_EXTENSIONS,
+            extension_configs=MARKDOWN_EXTENSION_CONFIGS,
+        )
         rendered = md_renderer.convert(text2)
         toc_html = _render_markdown_toc(getattr(md_renderer, "toc_tokens", []))
         html = "<div class='markdown-body'>" + rendered + "</div>"
@@ -1361,6 +1378,15 @@ body {
     padding-left:12px;
     color:var(--brand-muted);
 }
+.markdown-body .arithmatex {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"] {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"][display="true"] {
+    margin:1.2em 0 !important;
+}
 @media (max-width:1100px) {
     .gradio-container {
         padding:12px 18px 40px;
@@ -1404,6 +1430,15 @@ TREE_CSS = """
     margin-left:0;
     padding-left:12px;
     color:var(--brand-muted);
+}
+.markdown-body .arithmatex {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"] {
+    font-size:1em;
+}
+.markdown-body mjx-container[jax="CHTML"][display="true"] {
+    margin:1.2em 0 !important;
 }
 </style>
 """
