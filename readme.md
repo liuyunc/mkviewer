@@ -102,6 +102,13 @@ docker run -d \
 3. 使用左侧的控制按钮可刷新目录、清空缓存或执行“重建索引”将最新文档同步到 Elasticsearch。
 4. 全文搜索由 Elasticsearch 提供支持，默认按照相关度排序，并对命中片段进行高亮。
 
+## 数学公式渲染方案
+
+- **Markdown 解析阶段**：`Markdown` 解析器启用了 `pymdownx.arithmatex` 插件，输出 `span.arithmatex` 包裹的公式占位节点，确保 Markdown 与 DOCX 转换后的 HTML 都能被统一处理。
+- **页面引导 MathJax**：前端在 `<head>` 注入轻量的 MathJax 引导脚本（见 [`_MATHJAX_HEAD_TEMPLATE`](app.py)），优先加载内网镜像地址（`MATHJAX_JS_URL`），并补齐 `\(…\) / \[...\] / $...$` 等定界符配置。
+- **自动重排版**：当文档预览区域更新时，`MutationObserver` 会触发 MathJax `typesetPromise` 重新排版，且在排版前将重复转义的 `\(`、`\[` 等符号折叠为单反斜杠形式，避免渲染失败。
+- **网络友好**：脚本仅在缺失时注入一次 MathJax，并复用同一个实例，多标签页切换或文档刷新不会重复下载脚本，从而减轻网络负担。
+
 ## 开发与调试
 
 - 代码主入口：[`app.py`](app.py)
