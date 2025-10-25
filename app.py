@@ -1492,10 +1492,10 @@ body {
     color:var(--brand-muted);
 }
 .markdown-body .arithmatex {
-    font-size:1em;
+    font-size:.92em;
 }
 .markdown-body mjx-container[jax="CHTML"] {
-    font-size:1em;
+    font-size:.92em;
 }
 .markdown-body mjx-container[jax="CHTML"][display="true"] {
     margin:1.2em 0 !important;
@@ -1545,10 +1545,10 @@ TREE_CSS = """
     color:var(--brand-muted);
 }
 .markdown-body .arithmatex {
-    font-size:1em;
+    font-size:.92em;
 }
 .markdown-body mjx-container[jax="CHTML"] {
-    font-size:1em;
+    font-size:.92em;
 }
 .markdown-body mjx-container[jax="CHTML"][display="true"] {
     margin:1.2em 0 !important;
@@ -1724,12 +1724,6 @@ def ui_app():
                             elem_classes=["toc-card"],
                         )
                     with gr.TabItem("预览", id="preview"):
-                        with gr.Row(elem_classes=["mathjax-tools"]):
-                            btn_mathjax_check = gr.Button("验证 MathJax 脚本", variant="secondary")
-                            mathjax_status = gr.HTML(
-                                "<em>点击“验证 MathJax 脚本”以确认本地 MathJax 镜像是否可用。</em>",
-                                elem_classes=["mathjax-check-result"],
-                            )
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
                         html_view = gr.HTML(
                             "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
