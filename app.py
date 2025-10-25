@@ -167,6 +167,32 @@ _MATHJAX_HEAD_TEMPLATE = """
         return false;
     }
 
+    function unwrapLiteralAcronym(el) {
+        if (!el || !el.textContent) {
+            return false;
+        }
+        var text = el.textContent;
+        var trimmed = text.trim();
+        var match = /^\\\(([A-Z][A-Z0-9-]{1,24})\\\)$/.exec(trimmed);
+        if (!match) {
+            return false;
+        }
+        var parent = el.parentNode;
+        if (!parent) {
+            return false;
+        }
+        var leadingIndex = text.indexOf(trimmed);
+        if (leadingIndex === -1) {
+            return false;
+        }
+        var leading = leadingIndex > 0 ? text.slice(0, leadingIndex) : '';
+        var trailing = text.slice(leadingIndex + trimmed.length);
+        var replacementText = leading + '(' + match[1] + ')' + trailing;
+        parent.insertBefore(document.createTextNode(replacementText), el);
+        parent.removeChild(el);
+        return true;
+    }
+
     function restoreLiteralParens(root) {
         if (!root || typeof NodeFilter === 'undefined' || !root.ownerDocument || !root.ownerDocument.createTreeWalker) {
             return;
@@ -205,6 +231,9 @@ _MATHJAX_HEAD_TEMPLATE = """
             var el = nodes[i];
             var text = el.textContent;
             if (!text) {
+                continue;
+            }
+            if (unwrapLiteralAcronym(el)) {
                 continue;
             }
             var normalized = text
