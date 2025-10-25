@@ -449,6 +449,25 @@ body {
 </style>
 """
 
+
+_ACRONYM_INLINE_PATTERN = re.compile(r"\\\(([A-Z][A-Z0-9]*(?:[/-][A-Z0-9]+)?)\\\)")
+_ARITH_SPAN_PATTERN = re.compile(
+    r"<span[^>]*class=['\"][^'\"]*arithmatex[^'\"]*['\"][^>]*>\s*\\\(([A-Z][A-Z0-9]*(?:[/-][A-Z0-9]+)?)\\\)\s*</span>",
+    re.IGNORECASE,
+)
+
+
+def _restore_literal_acronyms(value: str) -> str:
+    if not value or "\\(" not in value:
+        return value
+
+    def _span_repl(match) -> str:
+        return f"({match.group(1)})"
+
+    replaced = _ARITH_SPAN_PATTERN.sub(_span_repl, value)
+    return _ACRONYM_INLINE_PATTERN.sub(r"(\1)", replaced)
+
+
 # ==================== MinIO 连接 ====================
 _client = None
 _active_ep = None
@@ -941,6 +960,9 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
                 html = _plain_text_html(text)
     else:  # pragma: no cover - 理论上不会走到
         raise RuntimeError(f"未知文档类型：{doc_type}")
+
+    text = _restore_literal_acronyms(text)
+    html = _restore_literal_acronyms(html)
 
     DOC_CACHE.set(key, (etag, doc_type, text, html, toc_html))
     return etag, doc_type, text, html, toc_html
