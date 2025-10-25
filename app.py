@@ -153,6 +153,46 @@ _MATHJAX_HEAD_TEMPLATE = """
         startup.typeset = false;
     }
 
+    function shouldSkip(node) {
+        if (!node) {
+            return false;
+        }
+        var el = node;
+        while (el) {
+            if (el.classList && el.classList.contains('arithmatex')) {
+                return true;
+            }
+            el = el.parentNode;
+        }
+        return false;
+    }
+
+    function restoreLiteralParens(root) {
+        if (!root || typeof NodeFilter === 'undefined' || !root.ownerDocument || !root.ownerDocument.createTreeWalker) {
+            return;
+        }
+        var walker = root.ownerDocument.createTreeWalker(
+            root,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+        );
+        var pattern = /\\\(([A-Z][A-Z0-9-]{1,24})\\\)/g;
+        var node = walker.nextNode();
+        while (node) {
+            if (!shouldSkip(node.parentNode)) {
+                var text = node.nodeValue;
+                if (text && text.indexOf('\\(') !== -1) {
+                    var replaced = text.replace(pattern, '($1)');
+                    if (replaced !== text) {
+                        node.nodeValue = replaced;
+                    }
+                }
+            }
+            node = walker.nextNode();
+        }
+    }
+
     function normalizeArithmatex(root) {
         if (!root || !root.querySelectorAll) {
             return;
@@ -200,6 +240,7 @@ _MATHJAX_HEAD_TEMPLATE = """
             return;
         }
         pending = true;
+        restoreLiteralParens(target);
         normalizeArithmatex(target);
         window.MathJax.typesetPromise([target]).then(function () {
             pending = false;
