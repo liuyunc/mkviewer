@@ -153,6 +153,72 @@ _MATHJAX_HEAD_TEMPLATE = """
         startup.typeset = false;
     }
 
+    function shouldSkip(node) {
+        if (!node) {
+            return false;
+        }
+        var el = node;
+        while (el) {
+            if (el.classList && el.classList.contains('arithmatex')) {
+                return true;
+            }
+            el = el.parentNode;
+        }
+        return false;
+    }
+
+    function unwrapLiteralAcronym(el) {
+        if (!el || !el.textContent) {
+            return false;
+        }
+        var text = el.textContent;
+        var trimmed = text.trim();
+        var match = /^\\\(([A-Z][A-Z0-9-]{1,24})\\\)$/.exec(trimmed);
+        if (!match) {
+            return false;
+        }
+        var parent = el.parentNode;
+        if (!parent) {
+            return false;
+        }
+        var leadingIndex = text.indexOf(trimmed);
+        if (leadingIndex === -1) {
+            return false;
+        }
+        var leading = leadingIndex > 0 ? text.slice(0, leadingIndex) : '';
+        var trailing = text.slice(leadingIndex + trimmed.length);
+        var replacementText = leading + '(' + match[1] + ')' + trailing;
+        parent.insertBefore(document.createTextNode(replacementText), el);
+        parent.removeChild(el);
+        return true;
+    }
+
+    function restoreLiteralParens(root) {
+        if (!root || typeof NodeFilter === 'undefined' || !root.ownerDocument || !root.ownerDocument.createTreeWalker) {
+            return;
+        }
+        var walker = root.ownerDocument.createTreeWalker(
+            root,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+        );
+        var pattern = /\\\(([A-Z][A-Z0-9-]{1,24})\\\)/g;
+        var node = walker.nextNode();
+        while (node) {
+            if (!shouldSkip(node.parentNode)) {
+                var text = node.nodeValue;
+                if (text && text.indexOf('\\(') !== -1) {
+                    var replaced = text.replace(pattern, '($1)');
+                    if (replaced !== text) {
+                        node.nodeValue = replaced;
+                    }
+                }
+            }
+            node = walker.nextNode();
+        }
+    }
+
     function normalizeArithmatex(root) {
         if (!root || !root.querySelectorAll) {
             return;
@@ -165,6 +231,9 @@ _MATHJAX_HEAD_TEMPLATE = """
             var el = nodes[i];
             var text = el.textContent;
             if (!text) {
+                continue;
+            }
+            if (unwrapLiteralAcronym(el)) {
                 continue;
             }
             var normalized = text
@@ -200,6 +269,7 @@ _MATHJAX_HEAD_TEMPLATE = """
             return;
         }
         pending = true;
+        restoreLiteralParens(target);
         normalizeArithmatex(target);
         window.MathJax.typesetPromise([target]).then(function () {
             pending = false;
