@@ -167,13 +167,19 @@ _MATHJAX_HEAD_TEMPLATE = """
         return false;
     }
 
+    var LITERAL_ACRONYM_PATTERN = /^\\(([A-Z][A-Z0-9]*(?:[\/-][A-Z0-9]+)?)\\)$/;
+    var PLAIN_ACRONYM_PATTERN = /^\(([A-Z][A-Z0-9]*(?:[\/-][A-Z0-9]+)?)\)$/;
+
     function unwrapLiteralAcronym(el) {
         if (!el || !el.textContent) {
             return false;
         }
         var text = el.textContent;
         var trimmed = text.trim();
-        var match = /^\\\(([A-Z][A-Z0-9-]{1,24})\\\)$/.exec(trimmed);
+        var match = LITERAL_ACRONYM_PATTERN.exec(trimmed);
+        if (!match) {
+            match = PLAIN_ACRONYM_PATTERN.exec(trimmed);
+        }
         if (!match) {
             return false;
         }
@@ -203,7 +209,7 @@ _MATHJAX_HEAD_TEMPLATE = """
             null,
             false
         );
-        var pattern = /\\\(([A-Z][A-Z0-9-]{1,24})\\\)/g;
+        var pattern = /\\(([A-Z][A-Z0-9]*(?:[\/-][A-Z0-9]+)?)\\)/g;
         var node = walker.nextNode();
         while (node) {
             if (!shouldSkip(node.parentNode)) {
