@@ -78,35 +78,28 @@ _MATHJAX_HEAD_TEMPLATE = """
     var SCRIPT_ID = 'mkv-mathjax-script';
     var PREVIEW_ID = 'doc-html-view';
     var SRC = '__MATHJAX_SRC__';
-    var observer = null;
-    var observedHost = null;
+    var previewObserver = null;
+    var rootObserver = null;
     var mathReady = false;
     var pending = false;
-    var needsTypeset = true;
-    var hostRetryTimer = null;
 
-    function scheduleHostCheck() {
-        if (hostRetryTimer !== null) {
-            return;
+    function ensurePair(list, left, right, prepend) {
+        if (!list) {
+            list = [];
+        } else {
+            list = list.slice();
         }
-        hostRetryTimer = setTimeout(function () {
-            hostRetryTimer = null;
-            ensureObserver();
-        }, 120);
-    }
-
-    function ensurePair(pairs, left, right, prepend) {
-        for (var i = 0; i < pairs.length; i++) {
-            if (pairs[i][0] === left && pairs[i][1] === right) {
-                return pairs;
+        for (var i = 0; i < list.length; i++) {
+            if (list[i][0] === left && list[i][1] === right) {
+                return list;
             }
         }
         if (prepend) {
-            pairs.unshift([left, right]);
+            list.unshift([left, right]);
         } else {
-            pairs.push([left, right]);
+            list.push([left, right]);
         }
-        return pairs;
+        return list;
     }
 
     function configure(win) {
@@ -115,14 +108,10 @@ _MATHJAX_HEAD_TEMPLATE = """
         }
         var cfg = win.MathJax = win.MathJax || {};
         var tex = cfg.tex = cfg.tex || {};
-        var inlinePairs = tex.inlineMath ? tex.inlineMath.slice() : [];
-        var displayPairs = tex.displayMath ? tex.displayMath.slice() : [];
-        inlinePairs = ensurePair(inlinePairs, '$', '$', true);
-        inlinePairs = ensurePair(inlinePairs, '\(', '\)', false);
-        displayPairs = ensurePair(displayPairs, '$$', '$$', true);
-        displayPairs = ensurePair(displayPairs, '\[', '\]', false);
-        tex.inlineMath = inlinePairs;
-        tex.displayMath = displayPairs;
+        tex.inlineMath = ensurePair(tex.inlineMath, '$', '$', true);
+        tex.inlineMath = ensurePair(tex.inlineMath, '\(', '\)', false);
+        tex.displayMath = ensurePair(tex.displayMath, '$$', '$$', true);
+        tex.displayMath = ensurePair(tex.displayMath, '\[', '\]', false);
         tex.processEscapes = true;
         tex.processEnvironments = true;
         var options = cfg.options = cfg.options || {};
@@ -131,20 +120,14 @@ _MATHJAX_HEAD_TEMPLATE = """
         } else if (options.ignoreHtmlClass.indexOf('tex2jax_ignore') === -1) {
             options.ignoreHtmlClass += '|tex2jax_ignore';
         }
-        var processClass = options.processHtmlClass || '';
-        var requiredClasses = ['doc-preview', 'doc-preview-inner', 'docx-preview', 'arithmatex'];
-        if (processClass) {
-            var seen = processClass.split('|');
-            for (var i = 0; i < requiredClasses.length; i++) {
-                if (seen.indexOf(requiredClasses[i]) === -1) {
-                    seen.push(requiredClasses[i]);
-                }
+        var required = ['doc-preview', 'doc-preview-inner', 'docx-preview', 'arithmatex'];
+        var processClass = options.processHtmlClass ? options.processHtmlClass.split('|') : [];
+        for (var i = 0; i < required.length; i++) {
+            if (processClass.indexOf(required[i]) === -1) {
+                processClass.push(required[i]);
             }
-            processClass = seen.join('|');
-        } else {
-            processClass = requiredClasses.join('|');
         }
-        options.processHtmlClass = processClass;
+        options.processHtmlClass = processClass.join('|');
         if (!options.skipHtmlTags) {
             options.skipHtmlTags = ['script', 'noscript', 'style', 'textarea', 'pre', 'code'];
         }
@@ -167,32 +150,16 @@ _MATHJAX_HEAD_TEMPLATE = """
                 continue;
             }
             var normalized = text
-                .replace(/\\\\\(/g, '\\(')
-                .replace(/\\\\\)/g, '\\)')
-                .replace(/\\\\\[/g, '\\[')
-                .replace(/\\\\\]/g, '\\]');
+                .replace(/\\\\(/g, '\(')
+                .replace(/\\\\)/g, '\)')
+                .replace(/\\\\[/g, '\[')
+                .replace(/\\\\]/g, '\]');
             if (normalized !== text) {
                 while (el.firstChild) {
                     el.removeChild(el.firstChild);
                 }
                 el.appendChild(document.createTextNode(normalized));
             }
-        }
-    }
-
-    function requestTypeset(host) {
-        var target = host || document.getElementById(PREVIEW_ID);
-        if (!target || (typeof target.isConnected === 'boolean' && !target.isConnected)) {
-            needsTypeset = true;
-            scheduleHostCheck();
-            return;
-        }
-        if (observedHost !== target) {
-            ensureObserver(target);
-        }
-        if (!mathReady || !(window.MathJax && window.MathJax.typesetPromise)) {
-            needsTypeset = true;
-            return;
         }
         needsTypeset = false;
         if (pending) {
@@ -214,61 +181,93 @@ _MATHJAX_HEAD_TEMPLATE = """
         });
     }
 
-    function observe(host) {
-        if (!window.MutationObserver || !host) {
+    function typeset(target) {
+        if (!mathReady || !window.MathJax || !window.MathJax.typesetPromise) {
             return;
         }
-        if (observer) {
-            observer.disconnect();
+        var host = target || document.getElementById(PREVIEW_ID);
+        if (!host) {
+            return;
         }
-        observer = new MutationObserver(function (mutations) {
+        if (pending) {
+            return;
+        }
+        pending = true;
+        normalizeArithmatex(host);
+        window.MathJax.typesetPromise([host]).catch(function (err) {
+            console.error('[mkviewer] MathJax 渲染失败', err);
+        }).finally(function () {
+            pending = false;
+        });
+    }
+
+    function observePreview() {
+        var host = document.getElementById(PREVIEW_ID);
+        if (!host || !window.MutationObserver) {
+            return;
+        }
+        if (previewObserver) {
+            previewObserver.disconnect();
+        }
+        previewObserver = new MutationObserver(function (mutations) {
             for (var i = 0; i < mutations.length; i++) {
                 var type = mutations[i].type;
                 if (type === 'childList' || type === 'characterData') {
-                    needsTypeset = true;
-                    requestTypeset(host);
+                    typeset(host);
                     break;
                 }
             }
         });
-        observer.observe(host, {childList: true, subtree: true, characterData: true});
-        observedHost = host;
+        previewObserver.observe(host, {childList: true, subtree: true, characterData: true});
+        typeset(host);
     }
 
-    function ensureObserver(target) {
-        var host = target || document.getElementById(PREVIEW_ID);
-        if (!host || (typeof host.isConnected === 'boolean' && !host.isConnected)) {
-            observedHost = null;
-            if (observer) {
-                observer.disconnect();
-                observer = null;
-            }
-            scheduleHostCheck();
+    function watchForPreview() {
+        if (!window.MutationObserver) {
             return;
         }
-        if (observedHost !== host) {
-            observe(host);
+        if (rootObserver) {
+            return;
         }
-        if (needsTypeset) {
-            requestTypeset(host);
+        rootObserver = new MutationObserver(function (mutations) {
+            for (var i = 0; i < mutations.length; i++) {
+                var nodes = mutations[i].addedNodes;
+                if (!nodes) {
+                    continue;
+                }
+                for (var j = 0; j < nodes.length; j++) {
+                    var node = nodes[j];
+                    if (!node) {
+                        continue;
+                    }
+                    if (node.id === PREVIEW_ID || (node.querySelector && node.querySelector('#' + PREVIEW_ID))) {
+                        observePreview();
+                        return;
+                    }
+                }
+            }
+        });
+        var root = document.body || document.documentElement;
+        if (root) {
+            rootObserver.observe(root, {childList: true, subtree: true});
         }
     }
 
     function onStartup() {
         mathReady = true;
-        if (needsTypeset) {
-            requestTypeset();
-        }
+        observePreview();
     }
 
     function whenMathJaxReady() {
-        if (window.MathJax && window.MathJax.startup && window.MathJax.startup.promise) {
-            window.MathJax.startup.promise.then(function () {
-                onStartup();
-            }).catch(function (err) {
+        if (!window.MathJax) {
+            return;
+        }
+        var startup = window.MathJax.startup;
+        if (startup && startup.promise) {
+            startup.promise.then(onStartup).catch(function (err) {
                 console.error('[mkviewer] MathJax 启动失败', err);
             });
-        } else if (window.MathJax && window.MathJax.typesetPromise) {
+        } else if (window.MathJax.typesetPromise) {
             onStartup();
         }
     }
@@ -277,8 +276,7 @@ _MATHJAX_HEAD_TEMPLATE = """
         if (!doc) {
             return;
         }
-        var existing = doc.getElementById(SCRIPT_ID);
-        if (existing) {
+        if (doc.getElementById(SCRIPT_ID)) {
             whenMathJaxReady();
             return;
         }
@@ -291,19 +289,22 @@ _MATHJAX_HEAD_TEMPLATE = """
         script.id = SCRIPT_ID;
         script.src = SRC;
         script.async = true;
+        script.addEventListener('load', whenMathJaxReady);
         script.addEventListener('error', function (err) {
             console.error('[mkviewer] MathJax 脚本加载失败', err);
-        });
-        script.addEventListener('load', function () {
-            whenMathJaxReady();
         });
         head.appendChild(script);
     }
 
     function init() {
         configure(window);
-        ensureObserver();
-        loadScript(document);
+        watchForPreview();
+        observePreview();
+        if (window.MathJax && (window.MathJax.startup || window.MathJax.typesetPromise)) {
+            whenMathJaxReady();
+        } else {
+            loadScript(document);
+        }
     }
 
     if (document.readyState === 'loading') {
@@ -311,8 +312,6 @@ _MATHJAX_HEAD_TEMPLATE = """
     } else {
         init();
     }
-
-    setInterval(ensureObserver, 2000);
 })();
 </script>
 """
