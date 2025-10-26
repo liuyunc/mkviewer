@@ -153,30 +153,109 @@ _MATHJAX_HEAD_TEMPLATE = """
         startup.typeset = false;
     }
 
-    function normalizeArithmatex(root) {
-        if (!root || !root.querySelectorAll) {
+    var literalPattern = /\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)/g;
+
+    function isCjkChar(ch) {
+        return !!(ch && /[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/.test(ch));
+    }
+
+    function isAsciiWordChar(ch) {
+        return !!(ch && /[A-Za-z0-9]/.test(ch));
+    }
+
+    function isBoundaryPunctuation(ch) {
+        return !!(ch && /[()\[\]{}<>《》〈〉「」『』“”"'、，。．。：；，。！？﹑・··\/-]/.test(ch));
+    }
+
+    function nearestChar(text, start, reverse) {
+        if (!text) {
+            return null;
+        }
+        if (reverse) {
+            for (var i = start - 1; i >= 0; i--) {
+                var ch = text.charAt(i);
+                if (!/\s/.test(ch)) {
+                    return ch;
+                }
+            }
+        } else {
+            for (var j = start; j < text.length; j++) {
+                var next = text.charAt(j);
+                if (!/\s/.test(next)) {
+                    return next;
+                }
+            }
+        }
+        return null;
+    }
+
+    function shouldRestoreLiteral(acronym, leftChar, rightChar) {
+        if (!acronym || acronym.length <= 2) {
+            return false;
+        }
+        if (!/^[A-Z0-9](?:[A-Z0-9]|[\/-](?=[A-Z0-9]))*$/.test(acronym)) {
+            return false;
+        }
+        if (isCjkChar(leftChar) || isCjkChar(rightChar)) {
+            return true;
+        }
+        var leftIsWord = isAsciiWordChar(leftChar);
+        var rightIsWord = isAsciiWordChar(rightChar);
+        if (leftIsWord || rightIsWord) {
+            return false;
+        }
+        if (!leftChar && !rightChar) {
+            return false;
+        }
+        if (isBoundaryPunctuation(leftChar) || isBoundaryPunctuation(rightChar)) {
+            return true;
+        }
+        return false;
+    }
+
+    function restoreLiteralAcronyms(root) {
+        if (!root) {
             return;
         }
-        var nodes = root.querySelectorAll('.arithmatex');
-        if (!nodes || !nodes.length) {
+        var doc = root.ownerDocument || document;
+        if (!doc.createTreeWalker || typeof NodeFilter === 'undefined') {
             return;
         }
-        for (var i = 0; i < nodes.length; i++) {
-            var el = nodes[i];
-            var text = el.textContent;
-            if (!text) {
+        var walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        var targets = [];
+        var node;
+        while ((node = walker.nextNode())) {
+            targets.push(node);
+        }
+        for (var i = 0; i < targets.length; i++) {
+            var textNode = targets[i];
+            var text = textNode.nodeValue;
+            if (!text || text.indexOf('\\(') === -1) {
                 continue;
             }
-            var normalized = text
-                .replace(/\\\\\(/g, '\\(')
-                .replace(/\\\\\)/g, '\\)')
-                .replace(/\\\\\[/g, '\\[')
-                .replace(/\\\\\]/g, '\\]');
-            if (normalized !== text) {
-                while (el.firstChild) {
-                    el.removeChild(el.firstChild);
+            var rebuilt = '';
+            var lastIndex = 0;
+            var changed = false;
+            literalPattern.lastIndex = 0;
+            var match;
+            while ((match = literalPattern.exec(text)) !== null) {
+                var start = match.index;
+                var end = start + match[0].length;
+                rebuilt += text.slice(lastIndex, start);
+                var acronym = match[1];
+                var leftChar = nearestChar(text, start, true);
+                var rightChar = nearestChar(text, end, false);
+                if (shouldRestoreLiteral(acronym, leftChar, rightChar)) {
+                    rebuilt += '(' + acronym + ')';
+                    changed = true;
+                } else {
+                    rebuilt += match[0];
                 }
-                el.appendChild(document.createTextNode(normalized));
+                lastIndex = end;
+            }
+            if (changed) {
+                rebuilt += text.slice(lastIndex);
+                textNode.nodeValue = rebuilt;
             }
         }
     }
@@ -200,7 +279,7 @@ _MATHJAX_HEAD_TEMPLATE = """
             return;
         }
         pending = true;
-        normalizeArithmatex(target);
+        restoreLiteralAcronyms(target);
         window.MathJax.typesetPromise([target]).then(function () {
             pending = false;
             if (needsTypeset) {
@@ -372,6 +451,7 @@ body {
 }
 </style>
 """
+
 
 # ==================== MinIO 连接 ====================
 _client = None
