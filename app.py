@@ -161,6 +161,82 @@ _MATHJAX_HEAD_TEMPLATE = """
         if (!nodes || !nodes.length) {
             return;
         }
+
+        function isCjkChar(ch) {
+            if (!ch) {
+                return false;
+            }
+            return /[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/.test(ch);
+        }
+
+        function isAsciiAlphaNumeric(ch) {
+            return !!(ch && /[A-Za-z0-9]/.test(ch));
+        }
+
+        function getContextChar(el, reverse) {
+            if (!el || !el.parentNode) {
+                return null;
+            }
+            var parent = el.parentNode;
+            if (!parent.childNodes || parent.childNodes.length === 0) {
+                return null;
+            }
+            var doc = el.ownerDocument || document;
+            if (!doc.createRange) {
+                return null;
+            }
+            try {
+                var range = doc.createRange();
+                if (reverse) {
+                    range.setStart(parent, 0);
+                    range.setEndBefore(el);
+                    var text = range.toString();
+                    range.detach && range.detach();
+                    for (var i = text.length - 1; i >= 0; i--) {
+                        var ch = text.charAt(i);
+                        if (!/\s/.test(ch)) {
+                            return ch;
+                        }
+                    }
+                } else {
+                    range.setStartAfter(el);
+                    range.setEnd(parent, parent.childNodes.length);
+                    var after = range.toString();
+                    range.detach && range.detach();
+                    for (var j = 0; j < after.length; j++) {
+                        var nextCh = after.charAt(j);
+                        if (!/\s/.test(nextCh)) {
+                            return nextCh;
+                        }
+                    }
+                }
+            } catch (err) {
+                return null;
+            }
+            return null;
+        }
+
+        function shouldRewriteLiteral(el, acronym) {
+            if (!acronym || acronym.length <= 2) {
+                return false;
+            }
+            if (!/^[A-Z0-9](?:[A-Z0-9]|[\/-](?=[A-Z0-9]))*$/.test(acronym)) {
+                return false;
+            }
+            var leftChar = getContextChar(el, true);
+            var rightChar = getContextChar(el, false);
+            var hasCjkNeighbor = isCjkChar(leftChar) || isCjkChar(rightChar);
+            if (hasCjkNeighbor) {
+                return true;
+            }
+            var leftIsWord = isAsciiAlphaNumeric(leftChar);
+            var rightIsWord = isAsciiAlphaNumeric(rightChar);
+            if (leftIsWord || rightIsWord) {
+                return false;
+            }
+            return true;
+        }
+
         for (var i = 0; i < nodes.length; i++) {
             var el = nodes[i];
             var text = el.textContent;
@@ -172,6 +248,45 @@ _MATHJAX_HEAD_TEMPLATE = """
                 .replace(/\\\\\)/g, '\\)')
                 .replace(/\\\\\[/g, '\\[')
                 .replace(/\\\\\]/g, '\\]');
+            var literalMatch = normalized.match(/^\s*\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)\s*$/);
+            if (literalMatch && shouldRewriteLiteral(el, literalMatch[1])) {
+                var plain = '(' + literalMatch[1] + ')';
+                while (el.firstChild) {
+                    el.removeChild(el.firstChild);
+                }
+                el.appendChild(document.createTextNode(plain));
+                if (el.classList && el.classList.contains('arithmatex')) {
+                    el.classList.remove('arithmatex');
+                } else {
+                    var cls = (el.getAttribute('class') || '').split(/\s+/);
+                    var updated = [];
+                    for (var j = 0; j < cls.length; j++) {
+                        if (cls[j] && cls[j] !== 'arithmatex') {
+                            updated.push(cls[j]);
+                        }
+                    }
+                    if (updated.length) {
+                        el.setAttribute('class', updated.join(' '));
+                    } else {
+                        el.removeAttribute('class');
+                    }
+                }
+                if (el.classList) {
+                    el.classList.add('tex2jax_ignore');
+                    el.classList.add('mkv-literal-acronym');
+                } else {
+                    var existing = (el.getAttribute('class') || '').split(/\s+/);
+                    if (existing.indexOf('tex2jax_ignore') === -1) {
+                        existing.push('tex2jax_ignore');
+                    }
+                    if (existing.indexOf('mkv-literal-acronym') === -1) {
+                        existing.push('mkv-literal-acronym');
+                    }
+                    el.setAttribute('class', existing.filter(Boolean).join(' '));
+                }
+                el.setAttribute('data-mkv-literal', 'acronym');
+                continue;
+            }
             if (normalized !== text) {
                 while (el.firstChild) {
                     el.removeChild(el.firstChild);
@@ -372,6 +487,7 @@ body {
 }
 </style>
 """
+
 
 # ==================== MinIO 连接 ====================
 _client = None
@@ -676,6 +792,48 @@ MARKDOWN_EXTENSION_CONFIGS = {
         "tex_block_wrap": [r"\[", r"\]"],
     },
 }
+
+
+_LITERAL_ACRONYM_PATTERN = re.compile(r"\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)")
+
+
+def _is_cjk_char(ch: str) -> bool:
+    if not ch:
+        return False
+    return bool(re.search(r"[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]", ch))
+
+
+def _is_ascii_word_char(ch: str) -> bool:
+    return bool(ch and re.match(r"[A-Za-z0-9]", ch))
+
+
+def _restore_literal_acronyms(text: str) -> str:
+    """Collapse escaped acronym parentheses back to literals when context allows."""
+
+    if not text or "\\(" not in text:
+        return text
+
+    def _should_restore(inner: str, left: Optional[str], right: Optional[str]) -> bool:
+        if not inner or len(inner) <= 2:
+            return False
+        if not re.fullmatch(r"[A-Z0-9]+(?:[\/-][A-Z0-9]+)*", inner):
+            return False
+        if _is_cjk_char(left) or _is_cjk_char(right):
+            return True
+        if _is_ascii_word_char(left) or _is_ascii_word_char(right):
+            return False
+        return True
+
+    def _repl(match: re.Match) -> str:
+        inner = match.group(1)
+        start, end = match.span()
+        left = text[start - 1] if start > 0 else None
+        right = text[end] if end < len(text) else None
+        if _should_restore(inner, left, right):
+            return f"({inner})"
+        return match.group(0)
+
+    return _LITERAL_ACRONYM_PATTERN.sub(_repl, text)
 #IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
 
 
