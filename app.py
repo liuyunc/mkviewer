@@ -6,7 +6,7 @@ import tempfile
 from collections import OrderedDict
 from functools import lru_cache
 from datetime import timedelta
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 import urllib.error
 import urllib.request
@@ -153,152 +153,30 @@ _MATHJAX_HEAD_TEMPLATE = """
         startup.typeset = false;
     }
 
-    // Detect inline math spans that actually hold literal acronyms such as "(CTCS)"
-    // surrounded by Chinese text. Require at least three alphanumeric characters to
-    // avoid stripping short legitimate formulas like "(SO)".
-    var literalAcronymPattern = /^\\\(([A-Z0-9]{3,}(?:[\/-][A-Z0-9]{2,})*)\\\)$/;
-    var cjkCharPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
-    var cjkPunctPattern = /[\u3000-\u303f\uff01-\uff60\uffe2-\uffe6]/;
-    var whitespacePattern = /\s/;
-
-    function significantChar(text, reverse) {
-        if (!text) {
-            return '';
-        }
-        if (reverse) {
-            for (var i = text.length - 1; i >= 0; i--) {
-                var ch = text.charAt(i);
-                if (!whitespacePattern.test(ch)) {
-                    return ch;
-                }
-            }
-        } else {
-            for (var j = 0; j < text.length; j++) {
-                var ch2 = text.charAt(j);
-                if (!whitespacePattern.test(ch2)) {
-                    return ch2;
-                }
-            }
-        }
-        return '';
-    }
-
-    function boundaryCharFromNode(node, reverse) {
-        if (!node) {
-            return '';
-        }
-        var type = node.nodeType;
-        if (type === 3) {  // TEXT_NODE
-            return significantChar(node.nodeValue, reverse);
-        }
-        if (type === 1) {  // ELEMENT_NODE
-            return significantChar(node.textContent || '', reverse);
-        }
-        return '';
-    }
-
-    function findNeighborChar(node, reverse) {
-        var current = node;
-        while (current) {
-            var sibling = reverse ? current.previousSibling : current.nextSibling;
-            while (sibling) {
-                var candidate = boundaryCharFromNode(sibling, reverse);
-                if (candidate) {
-                    return candidate;
-                }
-                sibling = reverse ? sibling.previousSibling : sibling.nextSibling;
-            }
-            current = current.parentNode;
-        }
-        return '';
-    }
-
-    function isCjkContext(ch) {
-        if (!ch) {
-            return false;
-        }
-        return cjkCharPattern.test(ch) || cjkPunctPattern.test(ch);
-    }
-
-    // Uppercase abbreviations wrapped by ``pymdownx.arithmatex`` are rendered inside
-    // ``<span class="arithmatex">\(...\)</span>`` elements.  In practice we observed:
-    //   1. Markdown and DOCX previews wrap literal acronyms in these spans when the
-    //      source text already contained ASCII parentheses.
-    //   2. MathJax dutifully treats them as inline math so the parentheses disappear.
-    //   3. Earlier text-node rewrites overcorrected and removed legitimate formulas.
-    // The pass below only rewrites spans whose content looks like a long acronym and
-    // that appear next to CJK characters or punctuation, which is where the false
-    // positives occur in the affected documents.
-    function rewriteLiteralAcronymSpans(root) {
-        if (!root || !root.querySelectorAll) {
-            return;
-        }
-        var nodes = root.querySelectorAll('.arithmatex');
-        for (var i = 0; i < nodes.length; i++) {
-            var el = nodes[i];
-            if (el.getAttribute('data-literal-acronym') === 'true' || el.classList.contains('literal-acronym')) {
-                continue;
-            }
-            var text = el.textContent || '';
-            var match = literalAcronymPattern.exec(text.trim());
-            if (!match) {
-                continue;
-            }
-            var prevChar = findNeighborChar(el, true);
-            var nextChar = findNeighborChar(el, false);
-            if (!isCjkContext(prevChar) && !isCjkContext(nextChar)) {
-                continue;
-            }
-            el.textContent = '(' + match[1] + ')';
-            el.classList.remove('arithmatex');
-            el.classList.add('tex2jax_ignore', 'literal-acronym');
-            el.setAttribute('data-literal-acronym', 'true');
-        }
-    }
-
     function normalizeArithmatex(root) {
         if (!root || !root.querySelectorAll) {
             return;
         }
-        var doc = root.ownerDocument || document;
-        if (!doc.createTreeWalker || typeof NodeFilter === 'undefined') {
+        var nodes = root.querySelectorAll('.arithmatex');
+        if (!nodes || !nodes.length) {
             return;
         }
-        var walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
-        var targets = [];
-        var node;
-        while ((node = walker.nextNode())) {
-            targets.push(node);
-        }
-        for (var i = 0; i < targets.length; i++) {
-            var textNode = targets[i];
-            var text = textNode.nodeValue;
-            if (!text || text.indexOf('\\(') === -1) {
+        for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            var text = el.textContent;
+            if (!text) {
                 continue;
             }
-            var rebuilt = '';
-            var lastIndex = 0;
-            var changed = false;
-            literalPattern.lastIndex = 0;
-            var match;
-            while ((match = literalPattern.exec(text)) !== null) {
-                var start = match.index;
-                var end = start + match[0].length;
-                rebuilt += text.slice(lastIndex, start);
-                var acronym = match[1];
-                var leftChar = nearestChar(text, start, true);
-                var rightChar = nearestChar(text, end, false);
-                if (shouldRestoreLiteral(acronym, leftChar, rightChar)) {
-                    rebuilt += '(' + acronym + ')';
-                    changed = true;
-                } else {
-                    rebuilt += match[0];
+            var normalized = text
+                .replace(/\\\\\(/g, '\\(')
+                .replace(/\\\\\)/g, '\\)')
+                .replace(/\\\\\[/g, '\\[')
+                .replace(/\\\\\]/g, '\\]');
+            if (normalized !== text) {
+                while (el.firstChild) {
+                    el.removeChild(el.firstChild);
                 }
-                lastIndex = end;
-            }
-            if (changed) {
-                rebuilt += text.slice(lastIndex);
-                textNode.nodeValue = rebuilt;
+                el.appendChild(document.createTextNode(normalized));
             }
         }
     }
@@ -323,7 +201,6 @@ _MATHJAX_HEAD_TEMPLATE = """
         }
         pending = true;
         normalizeArithmatex(target);
-        rewriteLiteralAcronymSpans(target);
         window.MathJax.typesetPromise([target]).then(function () {
             pending = false;
             if (needsTypeset) {
@@ -495,7 +372,6 @@ body {
 }
 </style>
 """
-
 
 # ==================== MinIO 连接 ====================
 _client = None
@@ -777,57 +653,6 @@ def _es_search_request(
     return es.search(**search_kwargs)
 
 # ==================== 图片链接重写 ====================
-# ==================== 公式占位恢复 ====================
-_ARITHMATEX_SPAN_RE = re.compile(
-    r"<span\\b([^>]*)class=([\"'])(?:(?:(?!\\2).)*?\\barithmatex\\b)(?:(?!\\2).)*?\\2([^>]*)>([^<]*)</span>",
-    re.IGNORECASE | re.DOTALL,
-)
-_ACRONYM_TOKEN_RE = re.compile(r"[A-Z0-9]{2,}(?:[\/-][A-Z0-9]{2,})*")
-_RAW_LITERAL_ACRONYM_RE = re.compile(
-    r"(?<!\\)\(([A-Z0-9]{2,}(?:[\/-][A-Z0-9]{2,})*)\)",
-)
-
-
-def _collect_literal_acronyms(raw_text: Optional[str]) -> Set[str]:
-    if not raw_text:
-        return set()
-    return {m.group(1) for m in _RAW_LITERAL_ACRONYM_RE.finditer(raw_text)}
-
-
-def _restore_literal_acronym_spans(html: str, literals: Set[str]) -> str:
-    if not html or not literals or "arithmatex" not in html:
-        return html
-
-    parts: List[str] = []
-    last_end = 0
-    for match in _ARITHMATEX_SPAN_RE.finditer(html):
-        start, end = match.span()
-        parts.append(html[last_end:start])
-        content = match.group(4)
-        if not content or "<" in content:
-            parts.append(html[start:end])
-            last_end = end
-            continue
-        stripped = content.strip()
-        if not (stripped.startswith(r"\(") and stripped.endswith(r"\)")):
-            parts.append(html[start:end])
-            last_end = end
-            continue
-        inner = stripped[2:-2].strip()
-        if inner not in literals or not _ACRONYM_TOKEN_RE.fullmatch(inner):
-            parts.append(html[start:end])
-            last_end = end
-            continue
-        prefix_len = len(content) - len(content.lstrip())
-        suffix_len = len(content) - len(content.rstrip())
-        prefix = content[:prefix_len]
-        suffix = content[len(content) - suffix_len:] if suffix_len else ""
-        parts.append(prefix + "(" + inner + ")" + suffix)
-        last_end = end
-    parts.append(html[last_end:])
-    return "".join(parts)
-
-
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
 # 支持的文档类型
 SUPPORTED_EXTS = {
@@ -851,48 +676,6 @@ MARKDOWN_EXTENSION_CONFIGS = {
         "tex_block_wrap": [r"\[", r"\]"],
     },
 }
-
-
-_LITERAL_ACRONYM_PATTERN = re.compile(r"\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)")
-
-
-def _is_cjk_char(ch: str) -> bool:
-    if not ch:
-        return False
-    return bool(re.search(r"[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]", ch))
-
-
-def _is_ascii_word_char(ch: str) -> bool:
-    return bool(ch and re.match(r"[A-Za-z0-9]", ch))
-
-
-def _restore_literal_acronyms(text: str) -> str:
-    """Collapse escaped acronym parentheses back to literals when context allows."""
-
-    if not text or "\\(" not in text:
-        return text
-
-    def _should_restore(inner: str, left: Optional[str], right: Optional[str]) -> bool:
-        if not inner or len(inner) <= 2:
-            return False
-        if not re.fullmatch(r"[A-Z0-9]+(?:[\/-][A-Z0-9]+)*", inner):
-            return False
-        if _is_cjk_char(left) or _is_cjk_char(right):
-            return True
-        if _is_ascii_word_char(left) or _is_ascii_word_char(right):
-            return False
-        return True
-
-    def _repl(match: re.Match) -> str:
-        inner = match.group(1)
-        start, end = match.span()
-        left = text[start - 1] if start > 0 else None
-        right = text[end] if end < len(text) else None
-        if _should_restore(inner, left, right):
-            return f"({inner})"
-        return match.group(0)
-
-    return _LITERAL_ACRONYM_PATTERN.sub(_repl, text)
 #IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
 
 
@@ -1038,26 +821,20 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     if doc_type == "markdown":
         text = data.decode("utf-8", errors="ignore")
         text2 = rewrite_image_links(text)
-        literal_acronyms = _collect_literal_acronyms(text2)
         md_renderer = Markdown(
             extensions=MARKDOWN_EXTENSIONS,
             extension_configs=MARKDOWN_EXTENSION_CONFIGS,
         )
         rendered = md_renderer.convert(text2)
-        rendered = _restore_literal_acronym_spans(rendered, literal_acronyms)
         toc_html = _render_markdown_toc(getattr(md_renderer, "toc_tokens", []))
         html = "<div class='doc-preview-inner markdown-body'>" + rendered + "</div>"
     elif doc_type == "docx":
         text, html = _docx_from_bytes(data)
-        literal_acronyms = _collect_literal_acronyms(text)
-        html = _restore_literal_acronym_spans(html, literal_acronyms)
     elif doc_type == "doc":
         converted = False
         if data.startswith(b"PK"):
             try:
                 text, html = _docx_from_bytes(data)
-                literal_acronyms = _collect_literal_acronyms(text)
-                html = _restore_literal_acronym_spans(html, literal_acronyms)
                 converted = True
             except Exception:
                 # 如果伪装成 DOCX 的 DOC 解析失败，继续尝试传统流程
@@ -1088,9 +865,6 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
                 html = _plain_text_html(text)
     else:  # pragma: no cover - 理论上不会走到
         raise RuntimeError(f"未知文档类型：{doc_type}")
-
-    text = _restore_literal_acronyms(text)
-    html = _restore_literal_acronyms(html)
 
     DOC_CACHE.set(key, (etag, doc_type, text, html, toc_html))
     return etag, doc_type, text, html, toc_html
@@ -1773,10 +1547,10 @@ TREE_CSS = """
     color:var(--brand-muted);
 }
 .markdown-body .arithmatex {
-    font-size:.92em;
+    font-size:.85em;
 }
 .markdown-body mjx-container[jax="CHTML"] {
-    font-size:.92em;
+    font-size:.85em;
 }
 .markdown-body mjx-container[jax="CHTML"][display="true"] {
     margin:1.2em 0 !important;
