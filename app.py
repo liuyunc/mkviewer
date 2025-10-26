@@ -705,6 +705,25 @@ def _render_markdown_toc(tokens: List[Dict[str, object]]) -> str:
     if not tree_html:
         return ""
     return "<div class='toc-tree'>" + tree_html + "</div>"
+
+
+def _wrap_toc_panel(inner_html: str) -> str:
+    """Wrap TOC content with a header and actions for the preview sidebar."""
+
+    return (
+        "<div class='toc-card-inner'>"
+        "<div class='toc-header'>"
+        "<span>目录</span>"
+        "<button type='button' class='toc-close' data-action='hide-toc' aria-label='收起目录'>"
+        "<span aria-hidden='true'>×</span>"
+        "</button>"
+        "</div>"
+        f"<div class='toc-body'>{inner_html}</div>"
+        "</div>"
+    )
+
+
+DEFAULT_TOC_PANEL = _wrap_toc_panel("<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>")
 def _to_public_image_url(path: str) -> str:
     p = path.strip().lstrip("./").lstrip("/")
     parts = [quote(seg) for seg in p.split("/")]
@@ -1025,6 +1044,7 @@ GLOBAL_CSS = """
     --brand-border:rgba(20,88,214,0.16);
     --brand-shadow:0 18px 42px rgba(20,88,214,0.15);
     --brand-radius:22px;
+    --toc-panel-width:clamp(220px,22vw,280px);
 }
 body, body * {
     font-family:"PingFang SC","Microsoft YaHei","Source Han Sans SC","Helvetica Neue",Arial,sans-serif !important;
@@ -1334,53 +1354,144 @@ body {
     box-shadow:var(--brand-shadow);
     padding:18px 24px;
 }
-.toc-col {
-    position:sticky;
-    top:126px;
-    display:flex;
-    flex-direction:column;
-    gap:12px;
-    align-self:flex-start;
-}
-.toc-heading h3 {
+.toc-heading,
+.tree-heading {
     margin-bottom:12px !important;
-    color:var(--brand-muted);
 }
 .toc-card {
-    background:var(--brand-card);
-    border-radius:var(--brand-radius);
-    border:1px solid var(--brand-border);
-    box-shadow:var(--brand-shadow);
-    padding:18px 20px;
-    max-height:72vh;
+    width:100%;
+    max-height:min(48vh, 420px);
+    background:rgba(255,255,255,0.96);
+    backdrop-filter:blur(12px);
+    border-radius:18px;
+    border:1px solid rgba(148,163,184,0.3);
+    box-shadow:0 16px 40px rgba(15,23,42,0.14);
+    display:flex;
+    flex-direction:column;
+    min-width:0;
+    transition:opacity .2s ease, transform .2s ease;
+}
+@supports not ((-webkit-backdrop-filter: blur(0)) or (backdrop-filter: blur(0))) {
+    .toc-card {
+        background:#ffffff;
+    }
+}
+.sidebar-toc {
+    margin-bottom:14px;
+}
+.toc-card.is-hidden {
+    opacity:0;
+    pointer-events:none;
+    transform:translateY(-6px);
+    display:none;
+}
+.toc-card-inner {
+    display:flex;
+    flex-direction:column;
+    height:100%;
+    overflow:hidden;
+}
+.toc-header {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:12px 16px;
+    border-bottom:1px solid rgba(148,163,184,0.25);
+    gap:10px;
+}
+.toc-header span {
+    font-weight:600;
+    color:var(--brand-muted);
+    letter-spacing:.02em;
+    font-size:.92rem;
+}
+.toc-close {
+    border:none;
+    background:transparent;
+    color:var(--brand-muted);
+    border-radius:999px;
+    width:28px;
+    height:28px;
+    cursor:pointer;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:1.1rem;
+    line-height:1;
+    transition:background .2s ease,color .2s ease;
+}
+.toc-close:hover {
+    background:rgba(20,88,214,0.12);
+    color:var(--brand-primary);
+}
+.toc-body {
+    padding:12px 16px 16px;
     overflow:auto;
 }
-.toc-card::-webkit-scrollbar { width:8px; }
-.toc-card::-webkit-scrollbar-thumb {
+.toc-body::-webkit-scrollbar { width:8px; }
+.toc-body::-webkit-scrollbar-thumb {
     background:rgba(20,88,214,0.25);
     border-radius:10px;
 }
 .toc-tree {
-    font-size:.95rem;
-    line-height:1.6;
+    font-size:.9rem;
+    line-height:1.58;
 }
 .toc-tree > .toc-list { padding-left:0; }
 .toc-tree ul {
     list-style:none;
-    padding-left:1.1rem;
+    padding-left:1rem;
     margin:6px 0;
 }
-.toc-tree li { margin:4px 0; }
+.toc-tree li { margin:3px 0; }
 .toc-tree a {
     color:var(--brand-primary);
     text-decoration:none;
     font-weight:500;
+    display:inline-block;
+    padding:2px 6px;
+    border-radius:12px;
 }
-.toc-tree a:hover { text-decoration:underline; }
+.toc-tree a:hover {
+    text-decoration:none;
+    background:rgba(20,88,214,0.12);
+}
 .toc-empty {
     color:var(--brand-muted);
     font-size:.95rem;
     line-height:1.6;
+}
+.toc-heading.is-hidden {
+    display:none !important;
+}
+.toc-toggle {
+    display:none;
+    justify-content:flex-start;
+    margin:8px 0 18px;
+}
+.toc-toggle.is-visible {
+    display:flex;
+}
+.toc-toggle-button {
+    display:none;
+    align-items:center;
+    gap:6px;
+    border:none;
+    border-radius:999px;
+    padding:10px 18px;
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
+    color:#ffffff;
+    font-weight:600;
+    cursor:pointer;
+    box-shadow:var(--brand-shadow);
+    transition:transform .2s ease, box-shadow .2s ease;
+}
+.toc-toggle-button.visible {
+    display:inline-flex;
+}
+.toc-toggle-button.visible:hover {
+    transform:translateY(-1px);
+    box-shadow:0 12px 26px rgba(20,88,214,0.2);
 }
 .download-panel {
     margin-bottom:12px;
@@ -1513,8 +1624,16 @@ body {
     }
     .sidebar-sticky { position:static; }
     .sidebar-tree { max-height:unset; }
-    .toc-col { position:static; }
-    .toc-card { max-height:unset; }
+    .toc-card {
+        max-height:none;
+        background:var(--brand-card);
+        backdrop-filter:none;
+        border:1px solid var(--brand-border);
+        box-shadow:var(--brand-shadow);
+    }
+    .toc-toggle {
+        margin-top:10px;
+    }
 }
 @media (max-width:768px) {
     .gradio-container { padding:10px 12px 32px; }
@@ -1527,6 +1646,145 @@ body {
     }
 }
 </style>
+<script>
+(function () {
+    var state = window.__mkvTocState || (window.__mkvTocState = {
+        hidden: false,
+        boundDoc: false,
+        boundToggle: null,
+    });
+
+    function liveLookup(current, id) {
+        if (current && typeof current.isConnected === 'boolean' && current.isConnected) {
+            return current;
+        }
+        return document.getElementById(id);
+    }
+
+    function ensureElements() {
+        state.toggle = liveLookup(state.toggle, 'toc-toggle-button');
+        state.toggleHost = liveLookup(state.toggleHost, 'toc-toggle');
+        state.panel = liveLookup(state.panel, 'doc-toc-panel');
+        state.heading = liveLookup(state.heading, 'toc-heading');
+        return Boolean(state.toggle && state.panel);
+    }
+
+    function sync() {
+        if (!ensureElements()) {
+            return;
+        }
+        var panel = state.panel;
+        if (panel) {
+            if (state.hidden) {
+                panel.classList.add('is-hidden');
+                panel.setAttribute('aria-hidden', 'true');
+            } else {
+                panel.classList.remove('is-hidden');
+                panel.setAttribute('aria-hidden', 'false');
+            }
+        }
+        if (state.heading) {
+            if (state.hidden) {
+                state.heading.classList.add('is-hidden');
+            } else {
+                state.heading.classList.remove('is-hidden');
+            }
+        }
+        if (state.toggle) {
+            if (state.hidden) {
+                state.toggle.classList.add('visible');
+                state.toggle.setAttribute('aria-expanded', 'false');
+            } else {
+                state.toggle.classList.remove('visible');
+                state.toggle.setAttribute('aria-expanded', 'true');
+            }
+            state.toggle.setAttribute('data-hidden', state.hidden ? '1' : '0');
+        }
+        if (state.toggleHost) {
+            if (state.hidden) {
+                state.toggleHost.classList.add('is-visible');
+            } else {
+                state.toggleHost.classList.remove('is-visible');
+            }
+        }
+    }
+
+    function hideToc(ev) {
+        if (ev) {
+            ev.preventDefault();
+        }
+        if (!state.hidden) {
+            state.hidden = true;
+            sync();
+            if (state.toggle && typeof state.toggle.focus === 'function') {
+                try {
+                    state.toggle.focus({ preventScroll: true });
+                } catch (err) {
+                    state.toggle.focus();
+                }
+            }
+        }
+    }
+
+    function showToc(ev) {
+        if (ev) {
+            ev.preventDefault();
+        }
+        if (state.hidden) {
+            state.hidden = false;
+            sync();
+            ensureElements();
+            if (state.panel && typeof state.panel.scrollIntoView === 'function') {
+                state.panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+    }
+
+    function attemptSetup() {
+        if (!ensureElements()) {
+            return;
+        }
+        var attr = state.toggle ? state.toggle.getAttribute('data-hidden') : null;
+        if (attr === '1') {
+            state.hidden = true;
+        }
+        if (state.toggle && state.toggle !== state.boundToggle) {
+            if (state.boundToggle) {
+                state.boundToggle.removeEventListener('click', showToc);
+            }
+            state.toggle.addEventListener('click', showToc);
+            state.boundToggle = state.toggle;
+        }
+        if (!state.boundDoc) {
+            state.boundDoc = true;
+            document.addEventListener('click', function (ev) {
+                var target = ev.target instanceof Element ? ev.target.closest('[data-action="hide-toc"]') : null;
+                if (target) {
+                    hideToc(ev);
+                }
+            });
+        }
+        sync();
+    }
+
+    function scheduleSetup() {
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(attemptSetup);
+        } else {
+            setTimeout(attemptSetup, 16);
+        }
+    }
+
+    var observer = new MutationObserver(scheduleSetup);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', attemptSetup);
+    } else {
+        attemptSetup();
+    }
+})();
+</script>
 """
 
 TREE_CSS = """
@@ -1700,7 +1958,26 @@ def ui_app():
         with gr.Row(elem_classes=["gr-row"], elem_id="layout-main"):
             with gr.Column(scale=1, min_width=280, elem_classes=["sidebar-col"]):
                 with gr.Column(elem_classes=["sidebar-sticky"]):
-                    gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
+                    gr.Markdown(
+                        "### 📑 当前目录",
+                        elem_id="toc-heading",
+                        elem_classes=["sidebar-heading", "toc-heading"],
+                    )
+                    toc_panel = gr.HTML(
+                        DEFAULT_TOC_PANEL,
+                        elem_id="doc-toc-panel",
+                        elem_classes=["toc-card", "sidebar-toc"],
+                    )
+                    toc_toggle = gr.HTML(
+                        "<button type='button' id='toc-toggle-button' class='toc-toggle-button' aria-expanded='true'>显示目录</button>",
+                        elem_id="toc-toggle",
+                        elem_classes=["toc-toggle"],
+                    )
+                    gr.Markdown(
+                        "### 📁 文档树",
+                        elem_id="tree-heading",
+                        elem_classes=["sidebar-heading", "tree-heading"],
+                    )
                     with gr.Row(elem_classes=["controls"]):
                         btn_expand = gr.Button("展开全部")
                         btn_collapse = gr.Button("折叠全部")
@@ -1720,11 +1997,6 @@ def ui_app():
                         status_bar = gr.HTML("", elem_classes=["status-bar"])
             with gr.Column(scale=7, elem_classes=["content-col"]):
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
-                    with gr.TabItem("目录", id="toc"):
-                        toc_panel = gr.HTML(
-                            "<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>",
-                            elem_classes=["toc-card"],
-                        )
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
                         html_view = gr.HTML(
@@ -1741,7 +2013,7 @@ def ui_app():
                         )
 
         # 内部状态：是否展开全部
-        expand_state = gr.State(True)
+        expand_state = gr.State(False)
 
         def _refresh_tree(expand_all: bool):
             global TREE_DOCS
@@ -1762,19 +2034,24 @@ def ui_app():
 
         def _render_from_key(key: str | None):
             if not key:
-                return "", "<em>未选择文件</em>", "", "<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>"
+                return "", "<em>未选择文件</em>", "", DEFAULT_TOC_PANEL
             try:
                 _, doc_type, text, html, toc = get_document(key)
             except Exception as exc:
                 msg = _esc(str(exc))
-                return download_link_html(key), f"<div class='doc-error'>{msg}</div>", msg, "<div class='toc-empty'>无法生成目录</div>"
+                return (
+                    download_link_html(key),
+                    f"<div class='doc-error'>{msg}</div>",
+                    msg,
+                    _wrap_toc_panel("<div class='toc-empty'>无法生成目录</div>"),
+                )
 
             if doc_type == "markdown":
                 toc_html = toc or "<div class='toc-empty'>文档中暂无可用标题</div>"
             else:
                 toc_html = "<div class='toc-empty'>当前文档类型未提供目录</div>"
 
-            return download_link_html(key), html, text, toc_html
+            return download_link_html(key), html, text, _wrap_toc_panel(toc_html)
 
         def _search(query: str):
             return fulltext_search(query)
@@ -1794,7 +2071,7 @@ def ui_app():
             return gr.update(selected="search")
 
         # 事件绑定
-        demo.load(lambda: _refresh_tree(True), outputs=[tree_html, status_bar, hero_html])
+        demo.load(lambda: _refresh_tree(False), outputs=[tree_html, status_bar, hero_html])
         btn_refresh.click(_refresh_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_expand.click(lambda: True, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
