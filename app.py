@@ -1999,10 +1999,21 @@ def ui_app():
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
-                        html_view = gr.HTML(
-                            "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
-                            elem_id="doc-html-view",
-                            elem_classes=["doc-preview"],
+                        with gr.Row(elem_id="preview-row", elem_classes=["preview-row"]):
+                            toc_panel = gr.HTML(
+                                DEFAULT_TOC_PANEL,
+                                elem_id="doc-toc-panel",
+                                elem_classes=["toc-card"],
+                            )
+                            html_view = gr.HTML(
+                                "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
+                                elem_id="doc-html-view",
+                                elem_classes=["doc-preview"],
+                            )
+                        toc_toggle = gr.HTML(
+                            "<button type='button' id='toc-toggle-button' class='toc-toggle-button' aria-expanded='true'>显示目录</button>",
+                            elem_id="toc-toggle",
+                            elem_classes=["toc-toggle"],
                         )
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
