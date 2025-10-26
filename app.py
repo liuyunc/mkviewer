@@ -1047,6 +1047,7 @@ GLOBAL_CSS = """
     --brand-border:rgba(20,88,214,0.16);
     --brand-shadow:0 18px 42px rgba(20,88,214,0.15);
     --brand-radius:22px;
+    --toc-panel-width:clamp(220px,22vw,280px);
 }
 body, body * {
     font-family:"PingFang SC","Microsoft YaHei","Source Han Sans SC","Helvetica Neue",Arial,sans-serif !important;
@@ -1448,6 +1449,39 @@ body {
     color:var(--brand-muted);
     font-size:.95rem;
     line-height:1.6;
+}
+#preview-row.toc-hidden .doc-preview {
+    flex-basis:100%;
+}
+.toc-toggle {
+    display:flex;
+    justify-content:flex-start;
+    margin-top:0;
+    position:sticky;
+    top:130px;
+    z-index:5;
+    padding-left:24px;
+}
+.toc-toggle-button {
+    display:none;
+    align-items:center;
+    gap:6px;
+    border:none;
+    border-radius:999px;
+    padding:10px 18px;
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
+    color:#ffffff;
+    font-weight:600;
+    cursor:pointer;
+    box-shadow:var(--brand-shadow);
+    transition:transform .2s ease, box-shadow .2s ease;
+}
+.toc-toggle-button.visible {
+    display:inline-flex;
+}
+.toc-toggle-button.visible:hover {
+    transform:translateY(-1px);
+    box-shadow:0 12px 26px rgba(20,88,214,0.2);
 }
 .download-panel {
     margin-bottom:12px;
@@ -1926,10 +1960,21 @@ def ui_app():
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
-                        html_view = gr.HTML(
-                            "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
-                            elem_id="doc-html-view",
-                            elem_classes=["doc-preview"],
+                        with gr.Row(elem_id="preview-row", elem_classes=["preview-row"]):
+                            toc_panel = gr.HTML(
+                                DEFAULT_TOC_PANEL,
+                                elem_id="doc-toc-panel",
+                                elem_classes=["toc-card"],
+                            )
+                            html_view = gr.HTML(
+                                "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
+                                elem_id="doc-html-view",
+                                elem_classes=["doc-preview"],
+                            )
+                        toc_toggle = gr.HTML(
+                            "<button type='button' id='toc-toggle-button' class='toc-toggle-button' aria-expanded='true'>显示目录</button>",
+                            elem_id="toc-toggle",
+                            elem_classes=["toc-toggle"],
                         )
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
