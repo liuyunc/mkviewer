@@ -153,220 +153,109 @@ _MATHJAX_HEAD_TEMPLATE = """
         startup.typeset = false;
     }
 
-    function shouldSkip(node) {
-        if (!node) {
+    var literalPattern = /\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)/g;
+
+    function isCjkChar(ch) {
+        return !!(ch && /[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/.test(ch));
+    }
+
+    function isAsciiWordChar(ch) {
+        return !!(ch && /[A-Za-z0-9]/.test(ch));
+    }
+
+    function isBoundaryPunctuation(ch) {
+        return !!(ch && /[()\[\]{}<>《》〈〉「」『』“”"'、，。．。：；，。！？﹑・··\/-]/.test(ch));
+    }
+
+    function nearestChar(text, start, reverse) {
+        if (!text) {
+            return null;
+        }
+        if (reverse) {
+            for (var i = start - 1; i >= 0; i--) {
+                var ch = text.charAt(i);
+                if (!/\s/.test(ch)) {
+                    return ch;
+                }
+            }
+        } else {
+            for (var j = start; j < text.length; j++) {
+                var next = text.charAt(j);
+                if (!/\s/.test(next)) {
+                    return next;
+                }
+            }
+        }
+        return null;
+    }
+
+    function shouldRestoreLiteral(acronym, leftChar, rightChar) {
+        if (!acronym || acronym.length <= 2) {
             return false;
         }
-        var el = node;
-        while (el) {
-            if (el.classList && el.classList.contains('arithmatex')) {
-                return true;
-            }
-            el = el.parentNode;
+        if (!/^[A-Z0-9](?:[A-Z0-9]|[\/-](?=[A-Z0-9]))*$/.test(acronym)) {
+            return false;
+        }
+        if (isCjkChar(leftChar) || isCjkChar(rightChar)) {
+            return true;
+        }
+        var leftIsWord = isAsciiWordChar(leftChar);
+        var rightIsWord = isAsciiWordChar(rightChar);
+        if (leftIsWord || rightIsWord) {
+            return false;
+        }
+        if (!leftChar && !rightChar) {
+            return false;
+        }
+        if (isBoundaryPunctuation(leftChar) || isBoundaryPunctuation(rightChar)) {
+            return true;
         }
         return false;
     }
 
-    var LITERAL_ACRONYM_PATTERN = /^\\(([A-Z][A-Z0-9]*(?:[\/-][A-Z0-9]+)?)\\)$/;
-    var PLAIN_ACRONYM_PATTERN = /^\(([A-Z][A-Z0-9]*(?:[\/-][A-Z0-9]+)?)\)$/;
-
-    function unwrapLiteralAcronym(el) {
-        if (!el || !el.textContent) {
-            return false;
-        }
-        var text = el.textContent;
-        var trimmed = text.trim();
-        var match = LITERAL_ACRONYM_PATTERN.exec(trimmed);
-        if (!match) {
-            match = PLAIN_ACRONYM_PATTERN.exec(trimmed);
-        }
-        if (!match) {
-            return false;
-        }
-        var parent = el.parentNode;
-        if (!parent) {
-            return false;
-        }
-        var leadingIndex = text.indexOf(trimmed);
-        if (leadingIndex === -1) {
-            return false;
-        }
-        var leading = leadingIndex > 0 ? text.slice(0, leadingIndex) : '';
-        var trailing = text.slice(leadingIndex + trimmed.length);
-        var replacementText = leading + '(' + match[1] + ')' + trailing;
-        parent.insertBefore(document.createTextNode(replacementText), el);
-        parent.removeChild(el);
-        return true;
-    }
-
-    function restoreLiteralParens(root) {
-        if (!root || typeof NodeFilter === 'undefined' || !root.ownerDocument || !root.ownerDocument.createTreeWalker) {
+    function restoreLiteralAcronyms(root) {
+        if (!root) {
             return;
         }
-        var walker = root.ownerDocument.createTreeWalker(
-            root,
-            NodeFilter.SHOW_TEXT,
-            null,
-            false
-        );
-        var pattern = /\\(([A-Z][A-Z0-9]*(?:[\/-][A-Z0-9]+)?)\\)/g;
-        var node = walker.nextNode();
-        while (node) {
-            if (!shouldSkip(node.parentNode)) {
-                var text = node.nodeValue;
-                if (text && text.indexOf('\\(') !== -1) {
-                    var replaced = text.replace(pattern, '($1)');
-                    if (replaced !== text) {
-                        node.nodeValue = replaced;
-                    }
-                }
-            }
-            node = walker.nextNode();
-        }
-    }
-
-    function normalizeArithmatex(root) {
-        if (!root || !root.querySelectorAll) {
+        var doc = root.ownerDocument || document;
+        if (!doc.createTreeWalker || typeof NodeFilter === 'undefined') {
             return;
         }
-        var nodes = root.querySelectorAll('.arithmatex');
-        if (!nodes || !nodes.length) {
-            return;
+        var walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        var targets = [];
+        var node;
+        while ((node = walker.nextNode())) {
+            targets.push(node);
         }
-
-        function isCjkChar(ch) {
-            if (!ch) {
-                return false;
-            }
-            return /[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/.test(ch);
-        }
-
-        function isAsciiAlphaNumeric(ch) {
-            return !!(ch && /[A-Za-z0-9]/.test(ch));
-        }
-
-        function getContextChar(el, reverse) {
-            if (!el || !el.parentNode) {
-                return null;
-            }
-            var parent = el.parentNode;
-            if (!parent.childNodes || parent.childNodes.length === 0) {
-                return null;
-            }
-            var doc = el.ownerDocument || document;
-            if (!doc.createRange) {
-                return null;
-            }
-            try {
-                var range = doc.createRange();
-                if (reverse) {
-                    range.setStart(parent, 0);
-                    range.setEndBefore(el);
-                    var text = range.toString();
-                    range.detach && range.detach();
-                    for (var i = text.length - 1; i >= 0; i--) {
-                        var ch = text.charAt(i);
-                        if (!/\s/.test(ch)) {
-                            return ch;
-                        }
-                    }
-                } else {
-                    range.setStartAfter(el);
-                    range.setEnd(parent, parent.childNodes.length);
-                    var after = range.toString();
-                    range.detach && range.detach();
-                    for (var j = 0; j < after.length; j++) {
-                        var nextCh = after.charAt(j);
-                        if (!/\s/.test(nextCh)) {
-                            return nextCh;
-                        }
-                    }
-                }
-            } catch (err) {
-                return null;
-            }
-            return null;
-        }
-
-        function shouldRewriteLiteral(el, acronym) {
-            if (!acronym || acronym.length <= 2) {
-                return false;
-            }
-            if (!/^[A-Z0-9](?:[A-Z0-9]|[\/-](?=[A-Z0-9]))*$/.test(acronym)) {
-                return false;
-            }
-            var leftChar = getContextChar(el, true);
-            var rightChar = getContextChar(el, false);
-            var hasCjkNeighbor = isCjkChar(leftChar) || isCjkChar(rightChar);
-            if (hasCjkNeighbor) {
-                return true;
-            }
-            var leftIsWord = isAsciiAlphaNumeric(leftChar);
-            var rightIsWord = isAsciiAlphaNumeric(rightChar);
-            if (leftIsWord || rightIsWord) {
-                return false;
-            }
-            return true;
-        }
-
-        for (var i = 0; i < nodes.length; i++) {
-            var el = nodes[i];
-            var text = el.textContent;
-            if (!text) {
+        for (var i = 0; i < targets.length; i++) {
+            var textNode = targets[i];
+            var text = textNode.nodeValue;
+            if (!text || text.indexOf('\\(') === -1) {
                 continue;
             }
-            if (unwrapLiteralAcronym(el)) {
-                continue;
-            }
-            var normalized = text
-                .replace(/\\\\\(/g, '\\(')
-                .replace(/\\\\\)/g, '\\)')
-                .replace(/\\\\\[/g, '\\[')
-                .replace(/\\\\\]/g, '\\]');
-            var literalMatch = normalized.match(/^\s*\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)\s*$/);
-            if (literalMatch && shouldRewriteLiteral(el, literalMatch[1])) {
-                var plain = '(' + literalMatch[1] + ')';
-                while (el.firstChild) {
-                    el.removeChild(el.firstChild);
-                }
-                el.appendChild(document.createTextNode(plain));
-                if (el.classList && el.classList.contains('arithmatex')) {
-                    el.classList.remove('arithmatex');
+            var rebuilt = '';
+            var lastIndex = 0;
+            var changed = false;
+            literalPattern.lastIndex = 0;
+            var match;
+            while ((match = literalPattern.exec(text)) !== null) {
+                var start = match.index;
+                var end = start + match[0].length;
+                rebuilt += text.slice(lastIndex, start);
+                var acronym = match[1];
+                var leftChar = nearestChar(text, start, true);
+                var rightChar = nearestChar(text, end, false);
+                if (shouldRestoreLiteral(acronym, leftChar, rightChar)) {
+                    rebuilt += '(' + acronym + ')';
+                    changed = true;
                 } else {
-                    var cls = (el.getAttribute('class') || '').split(/\s+/);
-                    var updated = [];
-                    for (var j = 0; j < cls.length; j++) {
-                        if (cls[j] && cls[j] !== 'arithmatex') {
-                            updated.push(cls[j]);
-                        }
-                    }
-                    if (updated.length) {
-                        el.setAttribute('class', updated.join(' '));
-                    } else {
-                        el.removeAttribute('class');
-                    }
+                    rebuilt += match[0];
                 }
-                if (el.classList) {
-                    el.classList.add('tex2jax_ignore');
-                    el.classList.add('mkv-literal-acronym');
-                } else {
-                    var existing = (el.getAttribute('class') || '').split(/\s+/);
-                    if (existing.indexOf('tex2jax_ignore') === -1) {
-                        existing.push('tex2jax_ignore');
-                    }
-                    if (existing.indexOf('mkv-literal-acronym') === -1) {
-                        existing.push('mkv-literal-acronym');
-                    }
-                    el.setAttribute('class', existing.filter(Boolean).join(' '));
-                }
-                el.setAttribute('data-mkv-literal', 'acronym');
-                continue;
+                lastIndex = end;
             }
-            if (normalized !== text) {
-                while (el.firstChild) {
-                    el.removeChild(el.firstChild);
-                }
-                el.appendChild(document.createTextNode(normalized));
+            if (changed) {
+                rebuilt += text.slice(lastIndex);
+                textNode.nodeValue = rebuilt;
             }
         }
     }
@@ -390,8 +279,7 @@ _MATHJAX_HEAD_TEMPLATE = """
             return;
         }
         pending = true;
-        restoreLiteralParens(target);
-        normalizeArithmatex(target);
+        restoreLiteralAcronyms(target);
         window.MathJax.typesetPromise([target]).then(function () {
             pending = false;
             if (needsTypeset) {
