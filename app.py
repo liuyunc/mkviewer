@@ -705,6 +705,28 @@ def _render_markdown_toc(tokens: List[Dict[str, object]]) -> str:
     if not tree_html:
         return ""
     return "<div class='toc-tree'>" + tree_html + "</div>"
+
+
+def _wrap_toc_panel(inner_html: str) -> str:
+    """Render the TOC panel with an inline collapse control."""
+
+    has_links = "toc-tree" in inner_html
+    button_label = "收起目录" if has_links else "暂无目录"
+    button_state = "" if has_links else " disabled"
+    button_expanded = "true" if has_links else "false"
+
+    return (
+        "<div class='toc-shell'>"
+        "  <div class='toc-shell-header'>"
+        "    <span class='toc-shell-title'>📑 当前目录</span>"
+        f"    <button type='button' class='toc-shell-toggle' data-action='toggle-toc' aria-expanded='{button_expanded}'{button_state}>{button_label}</button>"
+        "  </div>"
+        f"  <div class='toc-shell-body'>{inner_html}</div>"
+        "</div>"
+    )
+
+
+DEFAULT_TOC_PANEL = _wrap_toc_panel("<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>")
 def _to_public_image_url(path: str) -> str:
     p = path.strip().lstrip("./").lstrip("/")
     parts = [quote(seg) for seg in p.split("/")]
@@ -923,7 +945,7 @@ def _file_icon(name: str) -> str:
     return "📝"
 
 
-def render_tree_html(tree: Dict, expand_all: bool = True) -> str:
+def render_tree_html(tree: Dict, expand_all: bool = False) -> str:
     html: List[str] = []
     open_attr = " open" if expand_all else ""
     def rec(node: Dict):
@@ -1241,10 +1263,6 @@ body {
 }
 .sidebar-tree {
     padding:16px 18px;
-    background:var(--brand-card);
-    border-radius:var(--brand-radius);
-    border:1px solid var(--brand-border);
-    box-shadow:var(--brand-shadow);
     max-height:60vh;
     overflow:auto;
 }
@@ -1334,49 +1352,98 @@ body {
     box-shadow:var(--brand-shadow);
     padding:18px 24px;
 }
-.toc-col {
-    position:sticky;
-    top:126px;
-    display:flex;
-    flex-direction:column;
-    gap:12px;
-    align-self:flex-start;
-}
-.toc-heading h3 {
+.tree-heading {
     margin-bottom:12px !important;
-    color:var(--brand-muted);
 }
-.toc-card {
+.sidebar-card {
     background:var(--brand-card);
     border-radius:var(--brand-radius);
     border:1px solid var(--brand-border);
     box-shadow:var(--brand-shadow);
-    padding:18px 20px;
-    max-height:72vh;
+}
+.toc-panel {
+    padding:0;
+    overflow:hidden;
+}
+.toc-shell {
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+}
+.toc-shell-header {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:14px 18px;
+    border-bottom:1px solid rgba(148,163,184,0.25);
+    gap:12px;
+}
+.toc-shell-title {
+    font-weight:600;
+    color:var(--brand-muted);
+    letter-spacing:.02em;
+    font-size:.95rem;
+}
+.toc-shell-toggle {
+    border:none;
+    background:transparent;
+    color:var(--brand-primary);
+    font-weight:600;
+    border-radius:999px;
+    padding:6px 14px;
+    cursor:pointer;
+    transition:background .2s ease,color .2s ease;
+}
+.toc-shell-toggle:hover {
+    background:rgba(20,88,214,0.12);
+}
+.toc-shell-toggle.is-disabled,
+.toc-shell-toggle.is-disabled:hover {
+    background:transparent;
+    color:var(--brand-muted);
+    cursor:default;
+    opacity:0.6;
+    pointer-events:none;
+}
+.toc-shell-body {
+    padding:12px 18px 16px;
+    max-height:min(52vh, 440px);
     overflow:auto;
 }
-.toc-card::-webkit-scrollbar { width:8px; }
-.toc-card::-webkit-scrollbar-thumb {
+.toc-shell-body::-webkit-scrollbar { width:8px; }
+.toc-shell-body::-webkit-scrollbar-thumb {
     background:rgba(20,88,214,0.25);
     border-radius:10px;
 }
+.toc-panel.is-collapsed .toc-shell-body {
+    display:none;
+}
+.toc-panel.is-collapsed .toc-shell-toggle {
+    color:var(--brand-muted);
+}
 .toc-tree {
-    font-size:.95rem;
-    line-height:1.6;
+    font-size:.9rem;
+    line-height:1.58;
 }
 .toc-tree > .toc-list { padding-left:0; }
 .toc-tree ul {
     list-style:none;
-    padding-left:1.1rem;
+    padding-left:1rem;
     margin:6px 0;
 }
-.toc-tree li { margin:4px 0; }
+.toc-tree li { margin:3px 0; }
 .toc-tree a {
     color:var(--brand-primary);
     text-decoration:none;
     font-weight:500;
+    display:inline-block;
+    padding:2px 6px;
+    border-radius:12px;
 }
-.toc-tree a:hover { text-decoration:underline; }
+.toc-tree a:hover {
+    text-decoration:none;
+    background:rgba(20,88,214,0.12);
+}
 .toc-empty {
     color:var(--brand-muted);
     font-size:.95rem;
@@ -1513,8 +1580,9 @@ body {
     }
     .sidebar-sticky { position:static; }
     .sidebar-tree { max-height:unset; }
-    .toc-col { position:static; }
-    .toc-card { max-height:unset; }
+    .toc-panel {
+        max-height:none;
+    }
 }
 @media (max-width:768px) {
     .gradio-container { padding:10px 12px 32px; }
@@ -1527,6 +1595,133 @@ body {
     }
 }
 </style>
+<script>
+(function () {
+    var state = window.__mkvTocState || (window.__mkvTocState = {
+        collapsed: false,
+        panel: null,
+        toggle: null,
+        boundToggle: null,
+    });
+
+    function ensureElements() {
+        if (!state.panel || !(state.panel instanceof Element) || !state.panel.isConnected) {
+            state.panel = document.getElementById('doc-toc-panel');
+        }
+        if (!state.panel) {
+            state.toggle = null;
+            return false;
+        }
+        var nextToggle = state.panel.querySelector('[data-action="toggle-toc"]');
+        if (nextToggle !== state.toggle) {
+            if (state.toggle && state.toggle === state.boundToggle) {
+                state.toggle.removeEventListener('click', handleToggle);
+                state.boundToggle = null;
+            }
+            state.toggle = nextToggle;
+        }
+        return Boolean(state.panel && state.toggle);
+    }
+
+    function hasContent(panel) {
+        if (!panel) {
+            return false;
+        }
+        var body = panel.querySelector('.toc-shell-body');
+        if (!body) {
+            return false;
+        }
+        return !body.querySelector('.toc-empty');
+    }
+
+    function applyState() {
+        if (!ensureElements()) {
+            return;
+        }
+        var panel = state.panel;
+        var toggle = state.toggle;
+        var collapsed = Boolean(state.collapsed);
+        var contentAvailable = hasContent(panel);
+        if (!contentAvailable && collapsed) {
+            collapsed = false;
+            state.collapsed = false;
+        }
+        panel.classList.toggle('is-collapsed', collapsed);
+        panel.setAttribute('data-collapsed', collapsed ? '1' : '0');
+        if (toggle) {
+            if (contentAvailable) {
+                toggle.removeAttribute('disabled');
+                toggle.classList.remove('is-disabled');
+                toggle.textContent = collapsed ? '展开目录' : '收起目录';
+                toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            } else {
+                toggle.setAttribute('disabled', 'true');
+                toggle.classList.add('is-disabled');
+                toggle.textContent = '暂无目录';
+                toggle.setAttribute('aria-expanded', 'false');
+            }
+        }
+    }
+
+    function handleToggle(ev) {
+        if (ev) {
+            ev.preventDefault();
+        }
+        if (!ensureElements()) {
+            return;
+        }
+        if (!hasContent(state.panel)) {
+            return;
+        }
+        state.collapsed = !state.collapsed;
+        applyState();
+        if (!state.collapsed && state.panel && typeof state.panel.scrollIntoView === 'function') {
+            try {
+                state.panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            } catch (err) {
+                state.panel.scrollIntoView();
+            }
+        }
+    }
+
+    function attemptSetup() {
+        if (!ensureElements()) {
+            return;
+        }
+        if (state.toggle && state.toggle !== state.boundToggle) {
+            if (state.boundToggle) {
+                state.boundToggle.removeEventListener('click', handleToggle);
+            }
+            state.toggle.addEventListener('click', handleToggle);
+            state.boundToggle = state.toggle;
+        }
+        var attr = state.panel ? state.panel.getAttribute('data-collapsed') : null;
+        if (attr === '1') {
+            state.collapsed = true;
+        } else if (attr === '0') {
+            state.collapsed = false;
+        }
+        applyState();
+    }
+
+    function scheduleSetup() {
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(attemptSetup);
+        } else {
+            setTimeout(attemptSetup, 16);
+        }
+    }
+
+    var observer = new MutationObserver(scheduleSetup);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', attemptSetup);
+    } else {
+        attemptSetup();
+    }
+})();
+</script>
 """
 
 TREE_CSS = """
@@ -1700,7 +1895,16 @@ def ui_app():
         with gr.Row(elem_classes=["gr-row"], elem_id="layout-main"):
             with gr.Column(scale=1, min_width=280, elem_classes=["sidebar-col"]):
                 with gr.Column(elem_classes=["sidebar-sticky"]):
-                    gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
+                    toc_panel = gr.HTML(
+                        DEFAULT_TOC_PANEL,
+                        elem_id="doc-toc-panel",
+                        elem_classes=["toc-panel", "sidebar-card"],
+                    )
+                    gr.Markdown(
+                        "### 📁 文档树",
+                        elem_id="tree-heading",
+                        elem_classes=["sidebar-heading", "tree-heading"],
+                    )
                     with gr.Row(elem_classes=["controls"]):
                         btn_expand = gr.Button("展开全部")
                         btn_collapse = gr.Button("折叠全部")
@@ -1711,7 +1915,7 @@ def ui_app():
                             elem_classes=["search-input"],
                         )
                         btn_search = gr.Button("搜索", elem_classes=["search-button"])
-                    tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree"])
+                    tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree", "sidebar-card"])
                     with gr.Row(elem_classes=["controls"]):
                         btn_clear = gr.Button("清空缓存")
                         btn_refresh = gr.Button("刷新树", variant="secondary")
@@ -1720,11 +1924,6 @@ def ui_app():
                         status_bar = gr.HTML("", elem_classes=["status-bar"])
             with gr.Column(scale=7, elem_classes=["content-col"]):
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
-                    with gr.TabItem("目录", id="toc"):
-                        toc_panel = gr.HTML(
-                            "<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>",
-                            elem_classes=["toc-card"],
-                        )
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
                         html_view = gr.HTML(
@@ -1741,7 +1940,7 @@ def ui_app():
                         )
 
         # 内部状态：是否展开全部
-        expand_state = gr.State(True)
+        expand_state = gr.State(False)
 
         def _refresh_tree(expand_all: bool):
             global TREE_DOCS
@@ -1762,19 +1961,24 @@ def ui_app():
 
         def _render_from_key(key: str | None):
             if not key:
-                return "", "<em>未选择文件</em>", "", "<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>"
+                return "", "<em>未选择文件</em>", "", DEFAULT_TOC_PANEL
             try:
                 _, doc_type, text, html, toc = get_document(key)
             except Exception as exc:
                 msg = _esc(str(exc))
-                return download_link_html(key), f"<div class='doc-error'>{msg}</div>", msg, "<div class='toc-empty'>无法生成目录</div>"
+                return (
+                    download_link_html(key),
+                    f"<div class='doc-error'>{msg}</div>",
+                    msg,
+                    _wrap_toc_panel("<div class='toc-empty'>无法生成目录</div>"),
+                )
 
             if doc_type == "markdown":
                 toc_html = toc or "<div class='toc-empty'>文档中暂无可用标题</div>"
             else:
                 toc_html = "<div class='toc-empty'>当前文档类型未提供目录</div>"
 
-            return download_link_html(key), html, text, toc_html
+            return download_link_html(key), html, text, _wrap_toc_panel(toc_html)
 
         def _search(query: str):
             return fulltext_search(query)
@@ -1794,7 +1998,7 @@ def ui_app():
             return gr.update(selected="search")
 
         # 事件绑定
-        demo.load(lambda: _refresh_tree(True), outputs=[tree_html, status_bar, hero_html])
+        demo.load(lambda: _refresh_tree(False), outputs=[tree_html, status_bar, hero_html])
         btn_refresh.click(_refresh_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_expand.click(lambda: True, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
