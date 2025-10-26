@@ -1044,6 +1044,7 @@ GLOBAL_CSS = """
     --brand-border:rgba(20,88,214,0.16);
     --brand-shadow:0 18px 42px rgba(20,88,214,0.15);
     --brand-radius:22px;
+    --toc-panel-width:clamp(220px,22vw,280px);
 }
 body, body * {
     font-family:"PingFang SC","Microsoft YaHei","Source Han Sans SC","Helvetica Neue",Arial,sans-serif !important;
@@ -1355,44 +1356,65 @@ body {
 }
 .preview-row {
     align-items:stretch;
-    gap:18px;
+    gap:0;
+    position:relative;
 }
 .preview-row .doc-preview {
     flex:1 1 auto;
     min-width:0;
+    position:relative;
+    padding-left:calc(var(--toc-panel-width) + 32px);
+    transition:padding-left .24s ease;
 }
-.preview-row .toc-card {
-    flex:0 0 280px;
+#preview-row.toc-hidden .doc-preview {
+    padding-left:0;
 }
 .toc-card {
-    background:var(--brand-card);
-    border-radius:var(--brand-radius);
-    border:1px solid var(--brand-border);
-    box-shadow:var(--brand-shadow);
+    position:absolute;
+    left:24px;
+    top:24px;
+    width:var(--toc-panel-width);
+    max-height:min(62vh, 520px);
+    background:rgba(255,255,255,0.96);
+    backdrop-filter:blur(14px);
+    border-radius:20px;
+    border:1px solid rgba(148,163,184,0.35);
+    box-shadow:0 22px 48px rgba(15,23,42,0.18);
     display:flex;
     flex-direction:column;
-    max-height:72vh;
     min-width:0;
-    position:sticky;
-    top:126px;
+    transition:opacity .24s ease, transform .24s ease;
+    z-index:6;
+}
+@supports not ((-webkit-backdrop-filter: blur(0)) or (backdrop-filter: blur(0))) {
+    .toc-card {
+        background:#ffffff;
+    }
+}
+.toc-card.is-hidden {
+    opacity:0;
+    pointer-events:none;
+    transform:translateY(-8px);
 }
 .toc-card-inner {
     display:flex;
     flex-direction:column;
     height:100%;
+    overflow:hidden;
 }
 .toc-header {
     display:flex;
     align-items:center;
     justify-content:space-between;
-    padding:16px 18px;
-    border-bottom:1px solid var(--brand-border);
-    gap:12px;
+    padding:12px 16px;
+    border-bottom:1px solid rgba(148,163,184,0.25);
+    gap:10px;
 }
 .toc-header span {
     font-weight:600;
     color:var(--brand-muted);
     letter-spacing:.02em;
+    font-size:.92rem;
 }
 .toc-close {
     border:none;
@@ -1414,7 +1436,7 @@ body {
     color:var(--brand-primary);
 }
 .toc-body {
-    padding:14px 18px 18px;
+    padding:12px 16px 16px;
     overflow:auto;
 }
 .toc-body::-webkit-scrollbar { width:8px; }
@@ -1423,29 +1445,32 @@ body {
     border-radius:10px;
 }
 .toc-tree {
-    font-size:.95rem;
-    line-height:1.6;
+    font-size:.9rem;
+    line-height:1.58;
 }
 .toc-tree > .toc-list { padding-left:0; }
 .toc-tree ul {
     list-style:none;
-    padding-left:1.1rem;
+    padding-left:1rem;
     margin:6px 0;
 }
-.toc-tree li { margin:4px 0; }
+.toc-tree li { margin:3px 0; }
 .toc-tree a {
     color:var(--brand-primary);
     text-decoration:none;
     font-weight:500;
+    display:inline-block;
+    padding:2px 6px;
+    border-radius:12px;
 }
-.toc-tree a:hover { text-decoration:underline; }
+.toc-tree a:hover {
+    text-decoration:none;
+    background:rgba(20,88,214,0.12);
+}
 .toc-empty {
     color:var(--brand-muted);
     font-size:.95rem;
     line-height:1.6;
-}
-#preview-row.toc-hidden .toc-card {
-    display:none;
 }
 #preview-row.toc-hidden .doc-preview {
     flex-basis:100%;
@@ -1453,7 +1478,11 @@ body {
 .toc-toggle {
     display:flex;
     justify-content:flex-start;
-    margin-top:10px;
+    margin-top:0;
+    position:sticky;
+    top:130px;
+    z-index:5;
+    padding-left:24px;
 }
 .toc-toggle-button {
     display:none;
@@ -1609,11 +1638,29 @@ body {
     .sidebar-tree { max-height:unset; }
     #preview-row {
         flex-direction:column;
+        position:static;
+    }
+    .preview-row .doc-preview {
+        padding-left:0;
     }
     .preview-row .toc-card {
         position:static;
-        max-height:unset;
+        left:auto;
+        top:auto;
         width:100%;
+        max-height:none;
+        background:var(--brand-card);
+        backdrop-filter:none;
+        border:1px solid var(--brand-border);
+        box-shadow:var(--brand-shadow);
+        opacity:1 !important;
+        pointer-events:auto !important;
+        transform:none !important;
+    }
+    .toc-toggle {
+        position:static;
+        padding-left:0;
+        margin-top:12px;
     }
 }
 @media (max-width:768px) {
@@ -1640,14 +1687,37 @@ body {
         }
         row.dataset.tocReady = '1';
 
+        var panel = document.getElementById('doc-toc-panel');
+
+        function syncPanel(hidden) {
+            if (panel && typeof panel.isConnected === 'boolean' && !panel.isConnected) {
+                panel = null;
+            }
+            if (!panel) {
+                panel = document.getElementById('doc-toc-panel');
+            }
+            if (!panel) {
+                return;
+            }
+            if (hidden) {
+                panel.classList.add('is-hidden');
+                panel.setAttribute('aria-hidden', 'true');
+            } else {
+                panel.classList.remove('is-hidden');
+                panel.setAttribute('aria-hidden', 'false');
+            }
+        }
+
         function updateButton() {
-            if (row.classList.contains('toc-hidden')) {
+            var hidden = row.classList.contains('toc-hidden');
+            if (hidden) {
                 toggle.classList.add('visible');
                 toggle.setAttribute('aria-expanded', 'false');
             } else {
                 toggle.classList.remove('visible');
                 toggle.setAttribute('aria-expanded', 'true');
             }
+            syncPanel(hidden);
         }
 
         function hideToc() {
@@ -1661,7 +1731,12 @@ body {
             if (row.classList.contains('toc-hidden')) {
                 row.classList.remove('toc-hidden');
                 updateButton();
-                var panel = document.getElementById('doc-toc-panel');
+                if (panel && typeof panel.isConnected === 'boolean' && !panel.isConnected) {
+                    panel = null;
+                }
+                if (!panel) {
+                    panel = document.getElementById('doc-toc-panel');
+                }
                 if (panel && typeof panel.scrollIntoView === 'function') {
                     panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                 }
