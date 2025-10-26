@@ -1354,47 +1354,36 @@ body {
     box-shadow:var(--brand-shadow);
     padding:18px 24px;
 }
-.preview-row {
-    align-items:stretch;
-    gap:0;
-    position:relative;
-}
-.preview-row .doc-preview {
-    flex:1 1 auto;
-    min-width:0;
-    position:relative;
-    padding-left:calc(var(--toc-panel-width) + 32px);
-    transition:padding-left .24s ease;
-}
-#preview-row.toc-hidden .doc-preview {
-    padding-left:0;
+.toc-heading,
+.tree-heading {
+    margin-bottom:12px !important;
 }
 .toc-card {
-    position:absolute;
-    left:24px;
-    top:24px;
-    width:var(--toc-panel-width);
-    max-height:min(62vh, 520px);
+    width:100%;
+    max-height:min(48vh, 420px);
     background:rgba(255,255,255,0.96);
-    backdrop-filter:blur(14px);
-    border-radius:20px;
-    border:1px solid rgba(148,163,184,0.35);
-    box-shadow:0 22px 48px rgba(15,23,42,0.18);
+    backdrop-filter:blur(12px);
+    border-radius:18px;
+    border:1px solid rgba(148,163,184,0.3);
+    box-shadow:0 16px 40px rgba(15,23,42,0.14);
     display:flex;
     flex-direction:column;
     min-width:0;
-    transition:opacity .24s ease, transform .24s ease;
-    z-index:6;
+    transition:opacity .2s ease, transform .2s ease;
 }
 @supports not ((-webkit-backdrop-filter: blur(0)) or (backdrop-filter: blur(0))) {
     .toc-card {
         background:#ffffff;
     }
 }
+.sidebar-toc {
+    margin-bottom:14px;
+}
 .toc-card.is-hidden {
     opacity:0;
     pointer-events:none;
-    transform:translateY(-8px);
+    transform:translateY(-6px);
+    display:none;
 }
 .toc-card-inner {
     display:flex;
@@ -1472,17 +1461,16 @@ body {
     font-size:.95rem;
     line-height:1.6;
 }
-#preview-row.toc-hidden .doc-preview {
-    flex-basis:100%;
+.toc-heading.is-hidden {
+    display:none !important;
 }
 .toc-toggle {
-    display:flex;
+    display:none;
     justify-content:flex-start;
-    margin-top:0;
-    position:sticky;
-    top:130px;
-    z-index:5;
-    padding-left:24px;
+    margin:8px 0 18px;
+}
+.toc-toggle.is-visible {
+    display:flex;
 }
 .toc-toggle-button {
     display:none;
@@ -1636,31 +1624,15 @@ body {
     }
     .sidebar-sticky { position:static; }
     .sidebar-tree { max-height:unset; }
-    #preview-row {
-        flex-direction:column;
-        position:static;
-    }
-    .preview-row .doc-preview {
-        padding-left:0;
-    }
-    .preview-row .toc-card {
-        position:static;
-        left:auto;
-        top:auto;
-        width:100%;
+    .toc-card {
         max-height:none;
         background:var(--brand-card);
         backdrop-filter:none;
         border:1px solid var(--brand-border);
         box-shadow:var(--brand-shadow);
-        opacity:1 !important;
-        pointer-events:auto !important;
-        transform:none !important;
     }
     .toc-toggle {
-        position:static;
-        padding-left:0;
-        margin-top:12px;
+        margin-top:10px;
     }
 }
 @media (max-width:768px) {
@@ -1676,30 +1648,34 @@ body {
 </style>
 <script>
 (function () {
-    function attemptSetup() {
-        var row = document.getElementById('preview-row');
-        var toggle = document.getElementById('toc-toggle-button');
-        if (!row || !toggle) {
+    var state = window.__mkvTocState || (window.__mkvTocState = {
+        hidden: false,
+        boundDoc: false,
+        boundToggle: null,
+    });
+
+    function liveLookup(current, id) {
+        if (current && typeof current.isConnected === 'boolean' && current.isConnected) {
+            return current;
+        }
+        return document.getElementById(id);
+    }
+
+    function ensureElements() {
+        state.toggle = liveLookup(state.toggle, 'toc-toggle-button');
+        state.toggleHost = liveLookup(state.toggleHost, 'toc-toggle');
+        state.panel = liveLookup(state.panel, 'doc-toc-panel');
+        state.heading = liveLookup(state.heading, 'toc-heading');
+        return Boolean(state.toggle && state.panel);
+    }
+
+    function sync() {
+        if (!ensureElements()) {
             return;
         }
-        if (row.dataset.tocReady === '1') {
-            return;
-        }
-        row.dataset.tocReady = '1';
-
-        var panel = document.getElementById('doc-toc-panel');
-
-        function syncPanel(hidden) {
-            if (panel && typeof panel.isConnected === 'boolean' && !panel.isConnected) {
-                panel = null;
-            }
-            if (!panel) {
-                panel = document.getElementById('doc-toc-panel');
-            }
-            if (!panel) {
-                return;
-            }
-            if (hidden) {
+        var panel = state.panel;
+        if (panel) {
+            if (state.hidden) {
                 panel.classList.add('is-hidden');
                 panel.setAttribute('aria-hidden', 'true');
             } else {
@@ -1707,56 +1683,88 @@ body {
                 panel.setAttribute('aria-hidden', 'false');
             }
         }
-
-        function updateButton() {
-            var hidden = row.classList.contains('toc-hidden');
-            if (hidden) {
-                toggle.classList.add('visible');
-                toggle.setAttribute('aria-expanded', 'false');
+        if (state.heading) {
+            if (state.hidden) {
+                state.heading.classList.add('is-hidden');
             } else {
-                toggle.classList.remove('visible');
-                toggle.setAttribute('aria-expanded', 'true');
-            }
-            syncPanel(hidden);
-        }
-
-        function hideToc() {
-            if (!row.classList.contains('toc-hidden')) {
-                row.classList.add('toc-hidden');
-                updateButton();
+                state.heading.classList.remove('is-hidden');
             }
         }
-
-        function showToc() {
-            if (row.classList.contains('toc-hidden')) {
-                row.classList.remove('toc-hidden');
-                updateButton();
-                if (panel && typeof panel.isConnected === 'boolean' && !panel.isConnected) {
-                    panel = null;
-                }
-                if (!panel) {
-                    panel = document.getElementById('doc-toc-panel');
-                }
-                if (panel && typeof panel.scrollIntoView === 'function') {
-                    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                }
+        if (state.toggle) {
+            if (state.hidden) {
+                state.toggle.classList.add('visible');
+                state.toggle.setAttribute('aria-expanded', 'false');
+            } else {
+                state.toggle.classList.remove('visible');
+                state.toggle.setAttribute('aria-expanded', 'true');
+            }
+            state.toggle.setAttribute('data-hidden', state.hidden ? '1' : '0');
+        }
+        if (state.toggleHost) {
+            if (state.hidden) {
+                state.toggleHost.classList.add('is-visible');
+            } else {
+                state.toggleHost.classList.remove('is-visible');
             }
         }
+    }
 
-        toggle.addEventListener('click', function (ev) {
+    function hideToc(ev) {
+        if (ev) {
             ev.preventDefault();
-            showToc();
-        });
-
-        row.addEventListener('click', function (ev) {
-            var target = ev.target instanceof Element ? ev.target.closest('[data-action="hide-toc"]') : null;
-            if (target) {
-                ev.preventDefault();
-                hideToc();
+        }
+        if (!state.hidden) {
+            state.hidden = true;
+            sync();
+            if (state.toggle && typeof state.toggle.focus === 'function') {
+                try {
+                    state.toggle.focus({ preventScroll: true });
+                } catch (err) {
+                    state.toggle.focus();
+                }
             }
-        });
+        }
+    }
 
-        updateButton();
+    function showToc(ev) {
+        if (ev) {
+            ev.preventDefault();
+        }
+        if (state.hidden) {
+            state.hidden = false;
+            sync();
+            ensureElements();
+            if (state.panel && typeof state.panel.scrollIntoView === 'function') {
+                state.panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+    }
+
+    function attemptSetup() {
+        if (!ensureElements()) {
+            return;
+        }
+        var attr = state.toggle ? state.toggle.getAttribute('data-hidden') : null;
+        if (attr === '1') {
+            state.hidden = true;
+        }
+        if (state.toggle && state.toggle !== state.boundToggle) {
+            if (state.boundToggle) {
+                state.boundToggle.removeEventListener('click', showToc);
+            }
+            state.toggle.addEventListener('click', showToc);
+            state.boundToggle = state.toggle;
+        }
+        if (!state.boundDoc) {
+            state.boundDoc = true;
+            document.addEventListener('click', function (ev) {
+                var target = ev.target instanceof Element ? ev.target.closest('[data-action="hide-toc"]') : null;
+                if (target) {
+                    hideToc(ev);
+                }
+            });
+        }
+        sync();
     }
 
     function scheduleSetup() {
@@ -1950,7 +1958,26 @@ def ui_app():
         with gr.Row(elem_classes=["gr-row"], elem_id="layout-main"):
             with gr.Column(scale=1, min_width=280, elem_classes=["sidebar-col"]):
                 with gr.Column(elem_classes=["sidebar-sticky"]):
-                    gr.Markdown("### 📁 文档目录", elem_classes=["sidebar-heading"])
+                    gr.Markdown(
+                        "### 📑 当前目录",
+                        elem_id="toc-heading",
+                        elem_classes=["sidebar-heading", "toc-heading"],
+                    )
+                    toc_panel = gr.HTML(
+                        DEFAULT_TOC_PANEL,
+                        elem_id="doc-toc-panel",
+                        elem_classes=["toc-card", "sidebar-toc"],
+                    )
+                    toc_toggle = gr.HTML(
+                        "<button type='button' id='toc-toggle-button' class='toc-toggle-button' aria-expanded='true'>显示目录</button>",
+                        elem_id="toc-toggle",
+                        elem_classes=["toc-toggle"],
+                    )
+                    gr.Markdown(
+                        "### 📁 文档树",
+                        elem_id="tree-heading",
+                        elem_classes=["sidebar-heading", "tree-heading"],
+                    )
                     with gr.Row(elem_classes=["controls"]):
                         btn_expand = gr.Button("展开全部")
                         btn_collapse = gr.Button("折叠全部")
@@ -1997,7 +2024,7 @@ def ui_app():
                         )
 
         # 内部状态：是否展开全部
-        expand_state = gr.State(True)
+        expand_state = gr.State(False)
 
         def _refresh_tree(expand_all: bool):
             global TREE_DOCS
@@ -2055,7 +2082,7 @@ def ui_app():
             return gr.update(selected="search")
 
         # 事件绑定
-        demo.load(lambda: _refresh_tree(True), outputs=[tree_html, status_bar, hero_html])
+        demo.load(lambda: _refresh_tree(False), outputs=[tree_html, status_bar, hero_html])
         btn_refresh.click(_refresh_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_expand.click(lambda: True, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
