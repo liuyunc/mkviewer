@@ -233,6 +233,82 @@ _MATHJAX_HEAD_TEMPLATE = """
         if (!nodes || !nodes.length) {
             return;
         }
+
+        function isCjkChar(ch) {
+            if (!ch) {
+                return false;
+            }
+            return /[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/.test(ch);
+        }
+
+        function isAsciiAlphaNumeric(ch) {
+            return !!(ch && /[A-Za-z0-9]/.test(ch));
+        }
+
+        function getContextChar(el, reverse) {
+            if (!el || !el.parentNode) {
+                return null;
+            }
+            var parent = el.parentNode;
+            if (!parent.childNodes || parent.childNodes.length === 0) {
+                return null;
+            }
+            var doc = el.ownerDocument || document;
+            if (!doc.createRange) {
+                return null;
+            }
+            try {
+                var range = doc.createRange();
+                if (reverse) {
+                    range.setStart(parent, 0);
+                    range.setEndBefore(el);
+                    var text = range.toString();
+                    range.detach && range.detach();
+                    for (var i = text.length - 1; i >= 0; i--) {
+                        var ch = text.charAt(i);
+                        if (!/\s/.test(ch)) {
+                            return ch;
+                        }
+                    }
+                } else {
+                    range.setStartAfter(el);
+                    range.setEnd(parent, parent.childNodes.length);
+                    var after = range.toString();
+                    range.detach && range.detach();
+                    for (var j = 0; j < after.length; j++) {
+                        var nextCh = after.charAt(j);
+                        if (!/\s/.test(nextCh)) {
+                            return nextCh;
+                        }
+                    }
+                }
+            } catch (err) {
+                return null;
+            }
+            return null;
+        }
+
+        function shouldRewriteLiteral(el, acronym) {
+            if (!acronym || acronym.length <= 2) {
+                return false;
+            }
+            if (!/^[A-Z0-9](?:[A-Z0-9]|[\/-](?=[A-Z0-9]))*$/.test(acronym)) {
+                return false;
+            }
+            var leftChar = getContextChar(el, true);
+            var rightChar = getContextChar(el, false);
+            var hasCjkNeighbor = isCjkChar(leftChar) || isCjkChar(rightChar);
+            if (hasCjkNeighbor) {
+                return true;
+            }
+            var leftIsWord = isAsciiAlphaNumeric(leftChar);
+            var rightIsWord = isAsciiAlphaNumeric(rightChar);
+            if (leftIsWord || rightIsWord) {
+                return false;
+            }
+            return true;
+        }
+
         for (var i = 0; i < nodes.length; i++) {
             var el = nodes[i];
             var text = el.textContent;
@@ -247,6 +323,45 @@ _MATHJAX_HEAD_TEMPLATE = """
                 .replace(/\\\\\)/g, '\\)')
                 .replace(/\\\\\[/g, '\\[')
                 .replace(/\\\\\]/g, '\\]');
+            var literalMatch = normalized.match(/^\s*\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)\s*$/);
+            if (literalMatch && shouldRewriteLiteral(el, literalMatch[1])) {
+                var plain = '(' + literalMatch[1] + ')';
+                while (el.firstChild) {
+                    el.removeChild(el.firstChild);
+                }
+                el.appendChild(document.createTextNode(plain));
+                if (el.classList && el.classList.contains('arithmatex')) {
+                    el.classList.remove('arithmatex');
+                } else {
+                    var cls = (el.getAttribute('class') || '').split(/\s+/);
+                    var updated = [];
+                    for (var j = 0; j < cls.length; j++) {
+                        if (cls[j] && cls[j] !== 'arithmatex') {
+                            updated.push(cls[j]);
+                        }
+                    }
+                    if (updated.length) {
+                        el.setAttribute('class', updated.join(' '));
+                    } else {
+                        el.removeAttribute('class');
+                    }
+                }
+                if (el.classList) {
+                    el.classList.add('tex2jax_ignore');
+                    el.classList.add('mkv-literal-acronym');
+                } else {
+                    var existing = (el.getAttribute('class') || '').split(/\s+/);
+                    if (existing.indexOf('tex2jax_ignore') === -1) {
+                        existing.push('tex2jax_ignore');
+                    }
+                    if (existing.indexOf('mkv-literal-acronym') === -1) {
+                        existing.push('mkv-literal-acronym');
+                    }
+                    el.setAttribute('class', existing.filter(Boolean).join(' '));
+                }
+                el.setAttribute('data-mkv-literal', 'acronym');
+                continue;
+            }
             if (normalized !== text) {
                 while (el.firstChild) {
                     el.removeChild(el.firstChild);
@@ -448,24 +563,6 @@ body {
 }
 </style>
 """
-
-
-_ACRONYM_INLINE_PATTERN = re.compile(r"\\\(([A-Z][A-Z0-9]*(?:[/-][A-Z0-9]+)?)\\\)")
-_ARITH_SPAN_PATTERN = re.compile(
-    r"<span[^>]*class=['\"][^'\"]*arithmatex[^'\"]*['\"][^>]*>\s*\\\(([A-Z][A-Z0-9]*(?:[/-][A-Z0-9]+)?)\\\)\s*</span>",
-    re.IGNORECASE,
-)
-
-
-def _restore_literal_acronyms(value: str) -> str:
-    if not value or "\\(" not in value:
-        return value
-
-    def _span_repl(match) -> str:
-        return f"({match.group(1)})"
-
-    replaced = _ARITH_SPAN_PATTERN.sub(_span_repl, value)
-    return _ACRONYM_INLINE_PATTERN.sub(r"(\1)", replaced)
 
 
 # ==================== MinIO 连接 ====================
