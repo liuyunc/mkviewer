@@ -153,47 +153,106 @@ _MATHJAX_HEAD_TEMPLATE = """
         startup.typeset = false;
     }
 
-    var literalAcronymPattern = /\\\(([A-Z0-9]{2,}(?:[\/-][A-Z0-9]{2,})*)\\\)/g;
+    // Detect inline math spans that actually hold literal acronyms such as "(CTCS)"
+    // surrounded by Chinese text. Require at least three alphanumeric characters to
+    // avoid stripping short legitimate formulas like "(SO)".
+    var literalAcronymPattern = /^\\\(([A-Z0-9]{3,}(?:[\/-][A-Z0-9]{2,})*)\\\)$/;
+    var cjkCharPattern = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+    var cjkPunctPattern = /[\u3000-\u303f\uff01-\uff60\uffe2-\uffe6]/;
+    var whitespacePattern = /\s/;
 
-    function hasArithmatexAncestor(node) {
-        while (node) {
-            if (node.classList && node.classList.contains('arithmatex')) {
-                return true;
-            }
-            node = node.parentNode;
+    function significantChar(text, reverse) {
+        if (!text) {
+            return '';
         }
-        return false;
+        if (reverse) {
+            for (var i = text.length - 1; i >= 0; i--) {
+                var ch = text.charAt(i);
+                if (!whitespacePattern.test(ch)) {
+                    return ch;
+                }
+            }
+        } else {
+            for (var j = 0; j < text.length; j++) {
+                var ch2 = text.charAt(j);
+                if (!whitespacePattern.test(ch2)) {
+                    return ch2;
+                }
+            }
+        }
+        return '';
     }
 
-    function restoreLiteralAcronyms(root) {
-        if (!root) {
+    function boundaryCharFromNode(node, reverse) {
+        if (!node) {
+            return '';
+        }
+        var type = node.nodeType;
+        if (type === 3) {  // TEXT_NODE
+            return significantChar(node.nodeValue, reverse);
+        }
+        if (type === 1) {  // ELEMENT_NODE
+            return significantChar(node.textContent || '', reverse);
+        }
+        return '';
+    }
+
+    function findNeighborChar(node, reverse) {
+        var current = node;
+        while (current) {
+            var sibling = reverse ? current.previousSibling : current.nextSibling;
+            while (sibling) {
+                var candidate = boundaryCharFromNode(sibling, reverse);
+                if (candidate) {
+                    return candidate;
+                }
+                sibling = reverse ? sibling.previousSibling : sibling.nextSibling;
+            }
+            current = current.parentNode;
+        }
+        return '';
+    }
+
+    function isCjkContext(ch) {
+        if (!ch) {
+            return false;
+        }
+        return cjkCharPattern.test(ch) || cjkPunctPattern.test(ch);
+    }
+
+    // Uppercase abbreviations wrapped by ``pymdownx.arithmatex`` are rendered inside
+    // ``<span class="arithmatex">\(...\)</span>`` elements.  In practice we observed:
+    //   1. Markdown and DOCX previews wrap literal acronyms in these spans when the
+    //      source text already contained ASCII parentheses.
+    //   2. MathJax dutifully treats them as inline math so the parentheses disappear.
+    //   3. Earlier text-node rewrites overcorrected and removed legitimate formulas.
+    // The pass below only rewrites spans whose content looks like a long acronym and
+    // that appear next to CJK characters or punctuation, which is where the false
+    // positives occur in the affected documents.
+    function rewriteLiteralAcronymSpans(root) {
+        if (!root || !root.querySelectorAll) {
             return;
         }
-        var doc = root.ownerDocument || document;
-        if (!doc.createTreeWalker || typeof NodeFilter === 'undefined') {
-            return;
-        }
-        var walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
-        var targets = [];
-        var node;
-        while ((node = walker.nextNode())) {
-            targets.push(node);
-        }
-        for (var i = 0; i < targets.length; i++) {
-            var textNode = targets[i];
-            if (hasArithmatexAncestor(textNode.parentNode)) {
+        var nodes = root.querySelectorAll('.arithmatex');
+        for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            if (el.getAttribute('data-literal-acronym') === 'true' || el.classList.contains('literal-acronym')) {
                 continue;
             }
-            var text = textNode.nodeValue;
-            if (!text || text.indexOf('\\(') === -1) {
+            var text = el.textContent || '';
+            var match = literalAcronymPattern.exec(text.trim());
+            if (!match) {
                 continue;
             }
-            var replaced = text.replace(literalAcronymPattern, function (_, acronym) {
-                return '(' + acronym + ')';
-            });
-            if (replaced !== text) {
-                textNode.nodeValue = replaced;
+            var prevChar = findNeighborChar(el, true);
+            var nextChar = findNeighborChar(el, false);
+            if (!isCjkContext(prevChar) && !isCjkContext(nextChar)) {
+                continue;
             }
+            el.textContent = '(' + match[1] + ')';
+            el.classList.remove('arithmatex');
+            el.classList.add('tex2jax_ignore', 'literal-acronym');
+            el.setAttribute('data-literal-acronym', 'true');
         }
     }
 
@@ -264,7 +323,7 @@ _MATHJAX_HEAD_TEMPLATE = """
         }
         pending = true;
         normalizeArithmatex(target);
-        restoreLiteralAcronyms(target);
+        rewriteLiteralAcronymSpans(target);
         window.MathJax.typesetPromise([target]).then(function () {
             pending = false;
             if (needsTypeset) {
