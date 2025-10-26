@@ -6,7 +6,7 @@ import tempfile
 from collections import OrderedDict
 from functools import lru_cache
 from datetime import timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, urlencode
 import urllib.error
 import urllib.request
@@ -653,6 +653,57 @@ def _es_search_request(
     return es.search(**search_kwargs)
 
 # ==================== 图片链接重写 ====================
+# ==================== 公式占位恢复 ====================
+_ARITHMATEX_SPAN_RE = re.compile(
+    r"<span\\b([^>]*)class=([\"'])(?:(?:(?!\\2).)*?\\barithmatex\\b)(?:(?!\\2).)*?\\2([^>]*)>([^<]*)</span>",
+    re.IGNORECASE | re.DOTALL,
+)
+_ACRONYM_TOKEN_RE = re.compile(r"[A-Z0-9]{2,}(?:[\/-][A-Z0-9]{2,})*")
+_RAW_LITERAL_ACRONYM_RE = re.compile(
+    r"(?<!\\)\(([A-Z0-9]{2,}(?:[\/-][A-Z0-9]{2,})*)\)",
+)
+
+
+def _collect_literal_acronyms(raw_text: Optional[str]) -> Set[str]:
+    if not raw_text:
+        return set()
+    return {m.group(1) for m in _RAW_LITERAL_ACRONYM_RE.finditer(raw_text)}
+
+
+def _restore_literal_acronym_spans(html: str, literals: Set[str]) -> str:
+    if not html or not literals or "arithmatex" not in html:
+        return html
+
+    parts: List[str] = []
+    last_end = 0
+    for match in _ARITHMATEX_SPAN_RE.finditer(html):
+        start, end = match.span()
+        parts.append(html[last_end:start])
+        content = match.group(4)
+        if not content or "<" in content:
+            parts.append(html[start:end])
+            last_end = end
+            continue
+        stripped = content.strip()
+        if not (stripped.startswith(r"\(") and stripped.endswith(r"\)")):
+            parts.append(html[start:end])
+            last_end = end
+            continue
+        inner = stripped[2:-2].strip()
+        if inner not in literals or not _ACRONYM_TOKEN_RE.fullmatch(inner):
+            parts.append(html[start:end])
+            last_end = end
+            continue
+        prefix_len = len(content) - len(content.lstrip())
+        suffix_len = len(content) - len(content.rstrip())
+        prefix = content[:prefix_len]
+        suffix = content[len(content) - suffix_len:] if suffix_len else ""
+        parts.append(prefix + "(" + inner + ")" + suffix)
+        last_end = end
+    parts.append(html[last_end:])
+    return "".join(parts)
+
+
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
 # 支持的文档类型
 SUPPORTED_EXTS = {
@@ -821,20 +872,26 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
     if doc_type == "markdown":
         text = data.decode("utf-8", errors="ignore")
         text2 = rewrite_image_links(text)
+        literal_acronyms = _collect_literal_acronyms(text2)
         md_renderer = Markdown(
             extensions=MARKDOWN_EXTENSIONS,
             extension_configs=MARKDOWN_EXTENSION_CONFIGS,
         )
         rendered = md_renderer.convert(text2)
+        rendered = _restore_literal_acronym_spans(rendered, literal_acronyms)
         toc_html = _render_markdown_toc(getattr(md_renderer, "toc_tokens", []))
         html = "<div class='doc-preview-inner markdown-body'>" + rendered + "</div>"
     elif doc_type == "docx":
         text, html = _docx_from_bytes(data)
+        literal_acronyms = _collect_literal_acronyms(text)
+        html = _restore_literal_acronym_spans(html, literal_acronyms)
     elif doc_type == "doc":
         converted = False
         if data.startswith(b"PK"):
             try:
                 text, html = _docx_from_bytes(data)
+                literal_acronyms = _collect_literal_acronyms(text)
+                html = _restore_literal_acronym_spans(html, literal_acronyms)
                 converted = True
             except Exception:
                 # 如果伪装成 DOCX 的 DOC 解析失败，继续尝试传统流程
