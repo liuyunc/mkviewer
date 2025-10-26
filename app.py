@@ -161,6 +161,82 @@ _MATHJAX_HEAD_TEMPLATE = """
         if (!nodes || !nodes.length) {
             return;
         }
+
+        function isCjkChar(ch) {
+            if (!ch) {
+                return false;
+            }
+            return /[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/.test(ch);
+        }
+
+        function isAsciiAlphaNumeric(ch) {
+            return !!(ch && /[A-Za-z0-9]/.test(ch));
+        }
+
+        function getContextChar(el, reverse) {
+            if (!el || !el.parentNode) {
+                return null;
+            }
+            var parent = el.parentNode;
+            if (!parent.childNodes || parent.childNodes.length === 0) {
+                return null;
+            }
+            var doc = el.ownerDocument || document;
+            if (!doc.createRange) {
+                return null;
+            }
+            try {
+                var range = doc.createRange();
+                if (reverse) {
+                    range.setStart(parent, 0);
+                    range.setEndBefore(el);
+                    var text = range.toString();
+                    range.detach && range.detach();
+                    for (var i = text.length - 1; i >= 0; i--) {
+                        var ch = text.charAt(i);
+                        if (!/\s/.test(ch)) {
+                            return ch;
+                        }
+                    }
+                } else {
+                    range.setStartAfter(el);
+                    range.setEnd(parent, parent.childNodes.length);
+                    var after = range.toString();
+                    range.detach && range.detach();
+                    for (var j = 0; j < after.length; j++) {
+                        var nextCh = after.charAt(j);
+                        if (!/\s/.test(nextCh)) {
+                            return nextCh;
+                        }
+                    }
+                }
+            } catch (err) {
+                return null;
+            }
+            return null;
+        }
+
+        function shouldRewriteLiteral(el, acronym) {
+            if (!acronym || acronym.length <= 2) {
+                return false;
+            }
+            if (!/^[A-Z0-9](?:[A-Z0-9]|[\/-](?=[A-Z0-9]))*$/.test(acronym)) {
+                return false;
+            }
+            var leftChar = getContextChar(el, true);
+            var rightChar = getContextChar(el, false);
+            var hasCjkNeighbor = isCjkChar(leftChar) || isCjkChar(rightChar);
+            if (hasCjkNeighbor) {
+                return true;
+            }
+            var leftIsWord = isAsciiAlphaNumeric(leftChar);
+            var rightIsWord = isAsciiAlphaNumeric(rightChar);
+            if (leftIsWord || rightIsWord) {
+                return false;
+            }
+            return true;
+        }
+
         for (var i = 0; i < nodes.length; i++) {
             var el = nodes[i];
             var text = el.textContent;
@@ -173,7 +249,7 @@ _MATHJAX_HEAD_TEMPLATE = """
                 .replace(/\\\\\[/g, '\\[')
                 .replace(/\\\\\]/g, '\\]');
             var literalMatch = normalized.match(/^\s*\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)\s*$/);
-            if (literalMatch) {
+            if (literalMatch && shouldRewriteLiteral(el, literalMatch[1])) {
                 var plain = '(' + literalMatch[1] + ')';
                 while (el.firstChild) {
                     el.removeChild(el.firstChild);
