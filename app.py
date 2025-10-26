@@ -39,34 +39,49 @@ except Exception:  # pragma: no cover - optional dependency guard
     TextractShellError = Exception
 
 # ==================== 环境变量 ====================
+# MinIO 服务节点列表，支持通过逗号配置多个备用地址
 MINIO_ENDPOINTS = os.getenv("MINIO_ENDPOINTS", "10.20.41.24:9005,10.20.40.101:9005").split(",")
+# 是否使用 HTTPS 访问 MinIO（默认为 false）
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").strip().lower() == "true"
+# MinIO 的访问凭据，若运行在有默认凭据的环境可以保持为空
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
+# 存放文档的桶名称、桶内前缀
 DOC_BUCKET = os.getenv("DOC_BUCKET", "bucket")
 DOC_PREFIX = os.getenv("DOC_PREFIX", "")
+# 用于拼接公开图片访问链接的基础地址
 IMAGE_PUBLIC_BASE = os.getenv("IMAGE_PUBLIC_BASE", "http://10.20.41.24:9005")
+# 页面标题与 UI 展示相关配置
 SITE_TITLE = os.getenv("SITE_TITLE", "通号院文档知识库")
+# Gradio/FastAPI 服务绑定的地址与端口
 BIND_HOST = os.getenv("BIND_HOST", "0.0.0.0")
 BIND_PORT = int(os.getenv("BIND_PORT", "7861"))
+# MathJax 资源 CDN，缺省为内网地址，可按需替换
 MATHJAX_JS_URL = os.getenv(
     "MATHJAX_JS_URL",
     "http://10.20.41.24:9005/cdn/mathjax@3/es5/tex-mml-chtml.js",
 )
+# 是否启用 Gradio 的队列模式，用于控制并发请求
 ENABLE_GRADIO_QUEUE = os.getenv("ENABLE_GRADIO_QUEUE", "false").strip().lower() == "true"
+# Elasticsearch 相关配置：主机地址、索引名称以及鉴权信息
 ES_HOSTS = [h.strip() for h in os.getenv("ES_HOSTS", "http://localhost:9200").split(",") if h.strip()]
 ES_INDEX = os.getenv("ES_INDEX", "mkviewer-docs")
 ES_USERNAME = os.getenv("ES_USERNAME", "")
 ES_PASSWORD = os.getenv("ES_PASSWORD", "")
+# 是否校验证书、请求超时时间（秒）
 ES_VERIFY_CERTS = os.getenv("ES_VERIFY_CERTS", "true").strip().lower() == "true"
 ES_TIMEOUT = int(os.getenv("ES_TIMEOUT", "10"))
+# 与 Elasticsearch 服务协商的兼容版本头，仅支持 7 或 8
 ES_COMPAT_VERSION = os.getenv("ES_COMPAT_VERSION", "8").strip()
+# 防御性处理：Elasticsearch 7.x 仅接受兼容头为 7 或 8
 if ES_COMPAT_VERSION not in {"7", "8"}:  # Elasticsearch 7.x only accepts compat 7 or 8 headers
     ES_COMPAT_VERSION = "8"
 ES_MAX_ANALYZED_OFFSET = int(os.getenv("ES_MAX_ANALYZED_OFFSET", "999999"))
+# 控制高亮截断的最大字符数，避免部分版本默认值过小
 if ES_MAX_ANALYZED_OFFSET <= 0:
     ES_MAX_ANALYZED_OFFSET = 999999
 
+# 如果未配置 ES 地址，则视为未启用全文检索相关功能
 ES_ENABLED = bool(ES_HOSTS)
 
 # Inject MathJax with a focused bootstrap that waits for the library to finish
@@ -374,10 +389,20 @@ body {
 """
 
 # ==================== MinIO 连接 ====================
+# 复用全局 MinIO 客户端，避免每次请求都重新握手
 _client = None
+# 记录当前已连接的节点地址，便于排查问题
 _active_ep = None
 
 def connect() -> Tuple[Minio, str]:
+    """建立或复用 MinIO 连接。
+
+    返回一个 ``(client, endpoint)`` 元组：
+    - ``client``：MinIO SDK 客户端实例，可用于后续的读写操作；
+    - ``endpoint``：当前实际使用的服务地址。
+
+    当配置了多个地址时会按顺序尝试，直到成功或全部失败。
+    """
     global _client, _active_ep
     if _client is not None:
         return _client, _active_ep
@@ -393,6 +418,7 @@ def connect() -> Tuple[Minio, str]:
     raise RuntimeError(f"无法连接 MinIO：{MINIO_ENDPOINTS} 最后错误：{last}")
 
 # ==================== Elasticsearch 连接 ====================
+# 懒加载并缓存 Elasticsearch 客户端，避免重复创建
 _es_client: Optional[Elasticsearch] = None
 
 
@@ -653,6 +679,7 @@ def _es_search_request(
     return es.search(**search_kwargs)
 
 # ==================== 图片链接重写 ====================
+# Markdown 中识别为图片的扩展名列表
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp")
 # 支持的文档类型
 SUPPORTED_EXTS = {
@@ -661,6 +688,7 @@ SUPPORTED_EXTS = {
     ".docx": "docx",
     ".doc": "doc",
 }
+# Markdown 渲染时启用的扩展，涵盖代码高亮、目录、数学公式等
 MARKDOWN_EXTENSIONS = [
     "fenced_code",
     "tables",
@@ -668,6 +696,7 @@ MARKDOWN_EXTENSIONS = [
     "toc",
     "pymdownx.arithmatex",
 ]
+# 与扩展配套的配置，确保目录与数学公式的格式正确
 MARKDOWN_EXTENSION_CONFIGS = {
     "toc": {"permalink": False},
     "pymdownx.arithmatex": {
@@ -676,7 +705,6 @@ MARKDOWN_EXTENSION_CONFIGS = {
         "tex_block_wrap": [r"\[", r"\]"],
     },
 }
-#IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
 
 
 def _render_markdown_toc(tokens: List[Dict[str, object]]) -> str:
@@ -726,17 +754,22 @@ def _wrap_toc_panel(inner_html: str) -> str:
     )
 
 
+# 默认的目录面板内容，提示用户先选择 Markdown 文档
 DEFAULT_TOC_PANEL = _wrap_toc_panel("<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>")
+
+
 def _to_public_image_url(path: str) -> str:
+    """将对象存储中的相对路径转换为对外可访问的 HTTP URL。"""
+
+    # 依次清理路径前缀，避免出现重复的 ``./`` 或 ``/``
     p = path.strip().lstrip("./").lstrip("/")
     parts = [quote(seg) for seg in p.split("/")]
-    return IMAGE_PUBLIC_BASE.rstrip("/") + "/" + "/".join(parts)  
+    return IMAGE_PUBLIC_BASE.rstrip("/") + "/" + "/".join(parts)
 
-#.rstrip("/"): 移除 IMAGE_PUBLIC_BASE 末尾的 /，以避免出现双斜杠。
-#path.strip(): 移除路径字符串开头和结尾的空白字符。
-#.lstrip("./"): 移除字符串开头的 ./ 序列（如果存在）。
-#.lstrip("/"): 移除字符串开头的 / 字符（如果存在）。
+
 def rewrite_image_links(md_text: str) -> str:
+    """重写 Markdown 文本中的图片链接，统一指向 MinIO 对外访问域名。"""
+
     def repl_md(m):
         alt, url = m.group(1), m.group(2).strip()
         if re.match(r"^https?://", url):
@@ -761,6 +794,8 @@ def rewrite_image_links(md_text: str) -> str:
 # ==================== 文档转换辅助 ====================
 
 def _docx_from_bytes(data: bytes) -> Tuple[str, str]:
+    """将 DOCX 原始字节转换为 ``(纯文本, HTML)``。"""
+
     if mammoth is None:
         raise RuntimeError("未安装 mammoth，无法预览 DOCX 文档。")
     try:
@@ -774,7 +809,10 @@ def _docx_from_bytes(data: bytes) -> Tuple[str, str]:
 
 # ==================== 缓存（按 ETag） ====================
 class LRU:
+    """简单的最近最少使用缓存，实现基于 ``OrderedDict`` 的淘汰策略。"""
+
     def __init__(self, capacity: int = 512):
+        # ``capacity`` 控制缓存条目数量，超过后会移除最早访问的项目
         self.cap = capacity
         self.od: OrderedDict[str, tuple] = OrderedDict()
     def get(self, k):
@@ -792,11 +830,14 @@ class LRU:
 
 DOC_CACHE = LRU(512)  # key -> (etag, doc_type, text, html, toc)
 
+# 最近一次构建树时的文档列表缓存，用于快速切换展开状态
 TREE_DOCS: List[Dict[str, str]] = []
 
 # ==================== 列表/读取 ====================
 
 def list_documents() -> List[Dict[str, str]]:
+    """列出 MinIO 桶中可预览的文档，返回元数据列表。"""
+
     c, _ = connect()
     objs = c.list_objects(DOC_BUCKET, prefix=DOC_PREFIX or None, recursive=True)
     docs: List[Dict[str, str]] = []
@@ -813,6 +854,8 @@ def list_documents() -> List[Dict[str, str]]:
 
 
 def _plain_text_html(text: str) -> str:
+    """将纯文本转成带换行的 HTML 片段，便于在浏览器展示。"""
+
     if not text.strip():
         return "<div class='doc-preview-inner doc-preview-empty'><em>文档为空</em></div>"
     esc = _esc(text)
@@ -821,7 +864,14 @@ def _plain_text_html(text: str) -> str:
 
 
 def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, str, str, str]:
-    """返回 (etag, doc_type, text, html, toc)。"""
+    """读取指定对象并返回 ``(etag, doc_type, text, html, toc)``。
+
+    参数说明：
+    - ``key``：MinIO 中文档的完整路径；
+    - ``known_etag``：调用方已知的 etag，若一致则直接返回缓存。
+
+    会根据文件扩展名选择对应的解析器，并将结果写入 ``DOC_CACHE``。
+    """
     c, _ = connect()
     ext = os.path.splitext(key)[1].lower()
     doc_type = SUPPORTED_EXTS.get(ext)
@@ -894,6 +944,8 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
 # ==================== 目录树 ====================
 
 def build_tree(files: List[str], base_prefix: str = "") -> Dict:
+    """将文件列表转换为嵌套字典结构，供目录树渲染使用。"""
+
     tree: Dict = {}
     for key in files:
         rel = key[len(base_prefix):] if base_prefix and key.startswith(base_prefix) else key
@@ -908,6 +960,8 @@ def build_tree(files: List[str], base_prefix: str = "") -> Dict:
 
 
 def _esc(t: str) -> str:
+    """对 HTML 文本做最小转义，避免 XSS。"""
+
     return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
@@ -939,6 +993,8 @@ def _decode_possible_text(data: bytes) -> Optional[str]:
 
 
 def _file_icon(name: str) -> str:
+    """根据扩展名选择 emoji 图标，提升目录可读性。"""
+
     ext = os.path.splitext(name)[1].lower()
     if ext in (".doc", ".docx"):
         return "📄"
@@ -946,6 +1002,8 @@ def _file_icon(name: str) -> str:
 
 
 def render_tree_html(tree: Dict, expand_all: bool = False) -> str:
+    """将文档树字典渲染为 HTML，支持一键展开全部目录。"""
+
     html: List[str] = []
     open_attr = " open" if expand_all else ""
     def rec(node: Dict):
@@ -963,6 +1021,8 @@ def render_tree_html(tree: Dict, expand_all: bool = False) -> str:
 
 
 def sync_elasticsearch(docs: List[Dict[str, str]], force: bool = False) -> str:
+    """将文档元数据与 Elasticsearch 索引同步并返回状态提示。"""
+
     if not ES_ENABLED:
         return "<em>未启用 Elasticsearch，跳过索引同步</em>"
     if not docs:
@@ -1790,6 +1850,8 @@ TREE_CSS = """
 # ==================== 全文搜索 ====================
 
 def make_snippet(text: str, q: str, width: int = 60) -> str:
+    """从命中内容中截取高亮片段，默认保留关键字左右各 ``width`` 个字符。"""
+
     t = text
     ql = q.lower()
     tl = t.lower()
@@ -1807,6 +1869,8 @@ def make_snippet(text: str, q: str, width: int = 60) -> str:
 
 
 def fulltext_search(query: str) -> str:
+    """执行 Elasticsearch 检索并返回格式化的 HTML 结果。"""
+
     query = (query or "").strip()
     if not query:
         return "<em>请输入关键字</em>"
@@ -1862,6 +1926,8 @@ def fulltext_search(query: str) -> str:
 # ==================== 预签名下载链接 ====================
 
 def download_link_html(key: str) -> str:
+    """生成指定文件的预签名下载链接 HTML。"""
+
     c, ep = connect()
     url = c.presigned_get_object(DOC_BUCKET, key, expires=timedelta(hours=6))
     esc = _esc(url)
@@ -1875,6 +1941,8 @@ def download_link_html(key: str) -> str:
 
 
 def _hero_html(doc_total: Optional[int] = None) -> str:
+    """构造页面顶部欢迎信息，包含文档数量和反馈入口。"""
+
     if doc_total is None:
         total_span = "<span>文档总数统计中…</span>"
     else:
@@ -1906,6 +1974,8 @@ def _hero_html(doc_total: Optional[int] = None) -> str:
 
 
 def _manifest_payload() -> Dict[str, object]:
+    """生成 PWA manifest.json 的最小字段集合。"""
+
     short_name = SITE_TITLE if len(SITE_TITLE) <= 12 else SITE_TITLE[:12]
     return {
         "name": SITE_TITLE,
@@ -1919,6 +1989,8 @@ def _manifest_payload() -> Dict[str, object]:
 
 
 def ui_app():
+    """构建 Gradio Blocks 应用，包含文档树、预览和搜索模块。"""
+
     with gr.Blocks(
         title=SITE_TITLE,
         theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate"),
@@ -1984,7 +2056,7 @@ def ui_app():
                             elem_classes=["search-panel"],
                         )
 
-        # 内部状态：是否展开全部
+        # 内部状态：是否展开全部，用于记忆最近一次的树状目录展开偏好
         expand_state = gr.State(False)
 
         def _refresh_tree(expand_all: bool):
