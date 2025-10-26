@@ -153,68 +153,52 @@ _MATHJAX_HEAD_TEMPLATE = """
         startup.typeset = false;
     }
 
-    var literalPattern = /\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)/g;
+    var literalAcronymPattern = /\\\(([A-Z0-9]{2,}(?:[\/-][A-Z0-9]{2,})*)\\\)/g;
 
-    function isCjkChar(ch) {
-        return !!(ch && /[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/.test(ch));
-    }
-
-    function isAsciiWordChar(ch) {
-        return !!(ch && /[A-Za-z0-9]/.test(ch));
-    }
-
-    function isBoundaryPunctuation(ch) {
-        return !!(ch && /[()\[\]{}<>《》〈〉「」『』“”"'、，。．。：；，。！？﹑・··\/-]/.test(ch));
-    }
-
-    function nearestChar(text, start, reverse) {
-        if (!text) {
-            return null;
-        }
-        if (reverse) {
-            for (var i = start - 1; i >= 0; i--) {
-                var ch = text.charAt(i);
-                if (!/\s/.test(ch)) {
-                    return ch;
-                }
+    function hasArithmatexAncestor(node) {
+        while (node) {
+            if (node.classList && node.classList.contains('arithmatex')) {
+                return true;
             }
-        } else {
-            for (var j = start; j < text.length; j++) {
-                var next = text.charAt(j);
-                if (!/\s/.test(next)) {
-                    return next;
-                }
-            }
-        }
-        return null;
-    }
-
-    function shouldRestoreLiteral(acronym, leftChar, rightChar) {
-        if (!acronym || acronym.length <= 2) {
-            return false;
-        }
-        if (!/^[A-Z0-9](?:[A-Z0-9]|[\/-](?=[A-Z0-9]))*$/.test(acronym)) {
-            return false;
-        }
-        if (isCjkChar(leftChar) || isCjkChar(rightChar)) {
-            return true;
-        }
-        var leftIsWord = isAsciiWordChar(leftChar);
-        var rightIsWord = isAsciiWordChar(rightChar);
-        if (leftIsWord || rightIsWord) {
-            return false;
-        }
-        if (!leftChar && !rightChar) {
-            return false;
-        }
-        if (isBoundaryPunctuation(leftChar) || isBoundaryPunctuation(rightChar)) {
-            return true;
+            node = node.parentNode;
         }
         return false;
     }
 
     function restoreLiteralAcronyms(root) {
         if (!root) {
+            return;
+        }
+        var doc = root.ownerDocument || document;
+        if (!doc.createTreeWalker || typeof NodeFilter === 'undefined') {
+            return;
+        }
+        var walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        var targets = [];
+        var node;
+        while ((node = walker.nextNode())) {
+            targets.push(node);
+        }
+        for (var i = 0; i < targets.length; i++) {
+            var textNode = targets[i];
+            if (hasArithmatexAncestor(textNode.parentNode)) {
+                continue;
+            }
+            var text = textNode.nodeValue;
+            if (!text || text.indexOf('\\(') === -1) {
+                continue;
+            }
+            var replaced = text.replace(literalAcronymPattern, function (_, acronym) {
+                return '(' + acronym + ')';
+            });
+            if (replaced !== text) {
+                textNode.nodeValue = replaced;
+            }
+        }
+    }
+
+    function normalizeArithmatex(root) {
+        if (!root || !root.querySelectorAll) {
             return;
         }
         var doc = root.ownerDocument || document;
@@ -279,6 +263,7 @@ _MATHJAX_HEAD_TEMPLATE = """
             return;
         }
         pending = true;
+        normalizeArithmatex(target);
         restoreLiteralAcronyms(target);
         window.MathJax.typesetPromise([target]).then(function () {
             pending = false;
