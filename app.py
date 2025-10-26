@@ -153,6 +153,50 @@ _MATHJAX_HEAD_TEMPLATE = """
         startup.typeset = false;
     }
 
+    var literalAcronymPattern = /\\\(([A-Z0-9]{2,}(?:[\/-][A-Z0-9]{2,})*)\\\)/g;
+
+    function hasArithmatexAncestor(node) {
+        while (node) {
+            if (node.classList && node.classList.contains('arithmatex')) {
+                return true;
+            }
+            node = node.parentNode;
+        }
+        return false;
+    }
+
+    function restoreLiteralAcronyms(root) {
+        if (!root) {
+            return;
+        }
+        var doc = root.ownerDocument || document;
+        if (!doc.createTreeWalker || typeof NodeFilter === 'undefined') {
+            return;
+        }
+        var walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+        var targets = [];
+        var node;
+        while ((node = walker.nextNode())) {
+            targets.push(node);
+        }
+        for (var i = 0; i < targets.length; i++) {
+            var textNode = targets[i];
+            if (hasArithmatexAncestor(textNode.parentNode)) {
+                continue;
+            }
+            var text = textNode.nodeValue;
+            if (!text || text.indexOf('\\(') === -1) {
+                continue;
+            }
+            var replaced = text.replace(literalAcronymPattern, function (_, acronym) {
+                return '(' + acronym + ')';
+            });
+            if (replaced !== text) {
+                textNode.nodeValue = replaced;
+            }
+        }
+    }
+
     function normalizeArithmatex(root) {
         if (!root || !root.querySelectorAll) {
             return;
@@ -201,6 +245,7 @@ _MATHJAX_HEAD_TEMPLATE = """
         }
         pending = true;
         normalizeArithmatex(target);
+        restoreLiteralAcronyms(target);
         window.MathJax.typesetPromise([target]).then(function () {
             pending = false;
             if (needsTypeset) {
@@ -372,6 +417,7 @@ body {
 }
 </style>
 """
+
 
 # ==================== MinIO 连接 ====================
 _client = None
