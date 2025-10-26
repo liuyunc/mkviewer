@@ -153,6 +153,78 @@ _MATHJAX_HEAD_TEMPLATE = """
         startup.typeset = false;
     }
 
+    function shouldSkip(node) {
+        if (!node) {
+            return false;
+        }
+        var el = node;
+        while (el) {
+            if (el.classList && el.classList.contains('arithmatex')) {
+                return true;
+            }
+            el = el.parentNode;
+        }
+        return false;
+    }
+
+    var LITERAL_ACRONYM_PATTERN = /^\\(([A-Z][A-Z0-9]*(?:[\/-][A-Z0-9]+)?)\\)$/;
+    var PLAIN_ACRONYM_PATTERN = /^\(([A-Z][A-Z0-9]*(?:[\/-][A-Z0-9]+)?)\)$/;
+
+    function unwrapLiteralAcronym(el) {
+        if (!el || !el.textContent) {
+            return false;
+        }
+        var text = el.textContent;
+        var trimmed = text.trim();
+        var match = LITERAL_ACRONYM_PATTERN.exec(trimmed);
+        if (!match) {
+            match = PLAIN_ACRONYM_PATTERN.exec(trimmed);
+        }
+        if (!match) {
+            return false;
+        }
+        var parent = el.parentNode;
+        if (!parent) {
+            return false;
+        }
+        var leadingIndex = text.indexOf(trimmed);
+        if (leadingIndex === -1) {
+            return false;
+        }
+        var leading = leadingIndex > 0 ? text.slice(0, leadingIndex) : '';
+        var trailing = text.slice(leadingIndex + trimmed.length);
+        var replacementText = leading + '(' + match[1] + ')' + trailing;
+        parent.insertBefore(document.createTextNode(replacementText), el);
+        parent.removeChild(el);
+        return true;
+    }
+
+    function restoreLiteralParens(root) {
+        if (!root || typeof NodeFilter === 'undefined' || !root.ownerDocument || !root.ownerDocument.createTreeWalker) {
+            return;
+        }
+        var walker = root.ownerDocument.createTreeWalker(
+            root,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+        );
+        var pattern = /\\(([A-Z][A-Z0-9]*(?:[\/-][A-Z0-9]+)?)\\)/g;
+        var node = walker.nextNode();
+        while (node) {
+            if (!shouldSkip(node.parentNode)) {
+                var text = node.nodeValue;
+                if (text && text.indexOf('\\(') !== -1) {
+                    var replaced = text.replace(pattern, '($1)');
+                    if (replaced !== text) {
+                        node.nodeValue = replaced;
+                    }
+                }
+            }
+            node = walker.nextNode();
+        }
+    }
+
     function normalizeArithmatex(root) {
         if (!root || !root.querySelectorAll) {
             return;
@@ -243,6 +315,9 @@ _MATHJAX_HEAD_TEMPLATE = """
             if (!text) {
                 continue;
             }
+            if (unwrapLiteralAcronym(el)) {
+                continue;
+            }
             var normalized = text
                 .replace(/\\\\\(/g, '\\(')
                 .replace(/\\\\\)/g, '\\)')
@@ -315,6 +390,7 @@ _MATHJAX_HEAD_TEMPLATE = """
             return;
         }
         pending = true;
+        restoreLiteralParens(target);
         normalizeArithmatex(target);
         window.MathJax.typesetPromise([target]).then(function () {
             pending = false;
@@ -981,6 +1057,9 @@ def get_document(key: str, known_etag: Optional[str] = None) -> Tuple[str, str, 
                 html = _plain_text_html(text)
     else:  # pragma: no cover - 理论上不会走到
         raise RuntimeError(f"未知文档类型：{doc_type}")
+
+    text = _restore_literal_acronyms(text)
+    html = _restore_literal_acronyms(html)
 
     DOC_CACHE.set(key, (etag, doc_type, text, html, toc_html))
     return etag, doc_type, text, html, toc_html
