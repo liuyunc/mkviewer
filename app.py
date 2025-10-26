@@ -172,6 +172,45 @@ _MATHJAX_HEAD_TEMPLATE = """
                 .replace(/\\\\\)/g, '\\)')
                 .replace(/\\\\\[/g, '\\[')
                 .replace(/\\\\\]/g, '\\]');
+            var literalMatch = normalized.match(/^\s*\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)\s*$/);
+            if (literalMatch) {
+                var plain = '(' + literalMatch[1] + ')';
+                while (el.firstChild) {
+                    el.removeChild(el.firstChild);
+                }
+                el.appendChild(document.createTextNode(plain));
+                if (el.classList && el.classList.contains('arithmatex')) {
+                    el.classList.remove('arithmatex');
+                } else {
+                    var cls = (el.getAttribute('class') || '').split(/\s+/);
+                    var updated = [];
+                    for (var j = 0; j < cls.length; j++) {
+                        if (cls[j] && cls[j] !== 'arithmatex') {
+                            updated.push(cls[j]);
+                        }
+                    }
+                    if (updated.length) {
+                        el.setAttribute('class', updated.join(' '));
+                    } else {
+                        el.removeAttribute('class');
+                    }
+                }
+                if (el.classList) {
+                    el.classList.add('tex2jax_ignore');
+                    el.classList.add('mkv-literal-acronym');
+                } else {
+                    var existing = (el.getAttribute('class') || '').split(/\s+/);
+                    if (existing.indexOf('tex2jax_ignore') === -1) {
+                        existing.push('tex2jax_ignore');
+                    }
+                    if (existing.indexOf('mkv-literal-acronym') === -1) {
+                        existing.push('mkv-literal-acronym');
+                    }
+                    el.setAttribute('class', existing.filter(Boolean).join(' '));
+                }
+                el.setAttribute('data-mkv-literal', 'acronym');
+                continue;
+            }
             if (normalized !== text) {
                 while (el.firstChild) {
                     el.removeChild(el.firstChild);
@@ -372,6 +411,7 @@ body {
 }
 </style>
 """
+
 
 # ==================== MinIO 连接 ====================
 _client = None
