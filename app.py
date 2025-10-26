@@ -705,6 +705,25 @@ def _render_markdown_toc(tokens: List[Dict[str, object]]) -> str:
     if not tree_html:
         return ""
     return "<div class='toc-tree'>" + tree_html + "</div>"
+
+
+def _wrap_toc_panel(inner_html: str) -> str:
+    """Wrap TOC content with a header and actions for the preview sidebar."""
+
+    return (
+        "<div class='toc-card-inner'>"
+        "<div class='toc-header'>"
+        "<span>目录</span>"
+        "<button type='button' class='toc-close' data-action='hide-toc' aria-label='收起目录'>"
+        "<span aria-hidden='true'>×</span>"
+        "</button>"
+        "</div>"
+        f"<div class='toc-body'>{inner_html}</div>"
+        "</div>"
+    )
+
+
+DEFAULT_TOC_PANEL = _wrap_toc_panel("<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>")
 def _to_public_image_url(path: str) -> str:
     p = path.strip().lstrip("./").lstrip("/")
     parts = [quote(seg) for seg in p.split("/")]
@@ -1025,6 +1044,7 @@ GLOBAL_CSS = """
     --brand-border:rgba(20,88,214,0.16);
     --brand-shadow:0 18px 42px rgba(20,88,214,0.15);
     --brand-radius:22px;
+    --toc-panel-width:clamp(220px,22vw,280px);
 }
 body, body * {
     font-family:"PingFang SC","Microsoft YaHei","Source Han Sans SC","Helvetica Neue",Arial,sans-serif !important;
@@ -1334,53 +1354,156 @@ body {
     box-shadow:var(--brand-shadow);
     padding:18px 24px;
 }
-.toc-col {
-    position:sticky;
-    top:126px;
-    display:flex;
-    flex-direction:column;
-    gap:12px;
-    align-self:flex-start;
+.preview-row {
+    align-items:stretch;
+    gap:0;
+    position:relative;
 }
-.toc-heading h3 {
-    margin-bottom:12px !important;
-    color:var(--brand-muted);
+.preview-row .doc-preview {
+    flex:1 1 auto;
+    min-width:0;
+    position:relative;
+    padding-left:calc(var(--toc-panel-width) + 32px);
+    transition:padding-left .24s ease;
+}
+#preview-row.toc-hidden .doc-preview {
+    padding-left:0;
 }
 .toc-card {
-    background:var(--brand-card);
-    border-radius:var(--brand-radius);
-    border:1px solid var(--brand-border);
-    box-shadow:var(--brand-shadow);
-    padding:18px 20px;
-    max-height:72vh;
+    position:absolute;
+    left:24px;
+    top:24px;
+    width:var(--toc-panel-width);
+    max-height:min(62vh, 520px);
+    background:rgba(255,255,255,0.96);
+    backdrop-filter:blur(14px);
+    border-radius:20px;
+    border:1px solid rgba(148,163,184,0.35);
+    box-shadow:0 22px 48px rgba(15,23,42,0.18);
+    display:flex;
+    flex-direction:column;
+    min-width:0;
+    transition:opacity .24s ease, transform .24s ease;
+    z-index:6;
+}
+@supports not ((-webkit-backdrop-filter: blur(0)) or (backdrop-filter: blur(0))) {
+    .toc-card {
+        background:#ffffff;
+    }
+}
+.toc-card.is-hidden {
+    opacity:0;
+    pointer-events:none;
+    transform:translateY(-8px);
+}
+.toc-card-inner {
+    display:flex;
+    flex-direction:column;
+    height:100%;
+    overflow:hidden;
+}
+.toc-header {
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:12px 16px;
+    border-bottom:1px solid rgba(148,163,184,0.25);
+    gap:10px;
+}
+.toc-header span {
+    font-weight:600;
+    color:var(--brand-muted);
+    letter-spacing:.02em;
+    font-size:.92rem;
+}
+.toc-close {
+    border:none;
+    background:transparent;
+    color:var(--brand-muted);
+    border-radius:999px;
+    width:28px;
+    height:28px;
+    cursor:pointer;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:1.1rem;
+    line-height:1;
+    transition:background .2s ease,color .2s ease;
+}
+.toc-close:hover {
+    background:rgba(20,88,214,0.12);
+    color:var(--brand-primary);
+}
+.toc-body {
+    padding:12px 16px 16px;
     overflow:auto;
 }
-.toc-card::-webkit-scrollbar { width:8px; }
-.toc-card::-webkit-scrollbar-thumb {
+.toc-body::-webkit-scrollbar { width:8px; }
+.toc-body::-webkit-scrollbar-thumb {
     background:rgba(20,88,214,0.25);
     border-radius:10px;
 }
 .toc-tree {
-    font-size:.95rem;
-    line-height:1.6;
+    font-size:.9rem;
+    line-height:1.58;
 }
 .toc-tree > .toc-list { padding-left:0; }
 .toc-tree ul {
     list-style:none;
-    padding-left:1.1rem;
+    padding-left:1rem;
     margin:6px 0;
 }
-.toc-tree li { margin:4px 0; }
+.toc-tree li { margin:3px 0; }
 .toc-tree a {
     color:var(--brand-primary);
     text-decoration:none;
     font-weight:500;
+    display:inline-block;
+    padding:2px 6px;
+    border-radius:12px;
 }
-.toc-tree a:hover { text-decoration:underline; }
+.toc-tree a:hover {
+    text-decoration:none;
+    background:rgba(20,88,214,0.12);
+}
 .toc-empty {
     color:var(--brand-muted);
     font-size:.95rem;
     line-height:1.6;
+}
+#preview-row.toc-hidden .doc-preview {
+    flex-basis:100%;
+}
+.toc-toggle {
+    display:flex;
+    justify-content:flex-start;
+    margin-top:0;
+    position:sticky;
+    top:130px;
+    z-index:5;
+    padding-left:24px;
+}
+.toc-toggle-button {
+    display:none;
+    align-items:center;
+    gap:6px;
+    border:none;
+    border-radius:999px;
+    padding:10px 18px;
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
+    color:#ffffff;
+    font-weight:600;
+    cursor:pointer;
+    box-shadow:var(--brand-shadow);
+    transition:transform .2s ease, box-shadow .2s ease;
+}
+.toc-toggle-button.visible {
+    display:inline-flex;
+}
+.toc-toggle-button.visible:hover {
+    transform:translateY(-1px);
+    box-shadow:0 12px 26px rgba(20,88,214,0.2);
 }
 .download-panel {
     margin-bottom:12px;
@@ -1513,8 +1636,32 @@ body {
     }
     .sidebar-sticky { position:static; }
     .sidebar-tree { max-height:unset; }
-    .toc-col { position:static; }
-    .toc-card { max-height:unset; }
+    #preview-row {
+        flex-direction:column;
+        position:static;
+    }
+    .preview-row .doc-preview {
+        padding-left:0;
+    }
+    .preview-row .toc-card {
+        position:static;
+        left:auto;
+        top:auto;
+        width:100%;
+        max-height:none;
+        background:var(--brand-card);
+        backdrop-filter:none;
+        border:1px solid var(--brand-border);
+        box-shadow:var(--brand-shadow);
+        opacity:1 !important;
+        pointer-events:auto !important;
+        transform:none !important;
+    }
+    .toc-toggle {
+        position:static;
+        padding-left:0;
+        margin-top:12px;
+    }
 }
 @media (max-width:768px) {
     .gradio-container { padding:10px 12px 32px; }
@@ -1527,6 +1674,109 @@ body {
     }
 }
 </style>
+<script>
+(function () {
+    function attemptSetup() {
+        var row = document.getElementById('preview-row');
+        var toggle = document.getElementById('toc-toggle-button');
+        if (!row || !toggle) {
+            return;
+        }
+        if (row.dataset.tocReady === '1') {
+            return;
+        }
+        row.dataset.tocReady = '1';
+
+        var panel = document.getElementById('doc-toc-panel');
+
+        function syncPanel(hidden) {
+            if (panel && typeof panel.isConnected === 'boolean' && !panel.isConnected) {
+                panel = null;
+            }
+            if (!panel) {
+                panel = document.getElementById('doc-toc-panel');
+            }
+            if (!panel) {
+                return;
+            }
+            if (hidden) {
+                panel.classList.add('is-hidden');
+                panel.setAttribute('aria-hidden', 'true');
+            } else {
+                panel.classList.remove('is-hidden');
+                panel.setAttribute('aria-hidden', 'false');
+            }
+        }
+
+        function updateButton() {
+            var hidden = row.classList.contains('toc-hidden');
+            if (hidden) {
+                toggle.classList.add('visible');
+                toggle.setAttribute('aria-expanded', 'false');
+            } else {
+                toggle.classList.remove('visible');
+                toggle.setAttribute('aria-expanded', 'true');
+            }
+            syncPanel(hidden);
+        }
+
+        function hideToc() {
+            if (!row.classList.contains('toc-hidden')) {
+                row.classList.add('toc-hidden');
+                updateButton();
+            }
+        }
+
+        function showToc() {
+            if (row.classList.contains('toc-hidden')) {
+                row.classList.remove('toc-hidden');
+                updateButton();
+                if (panel && typeof panel.isConnected === 'boolean' && !panel.isConnected) {
+                    panel = null;
+                }
+                if (!panel) {
+                    panel = document.getElementById('doc-toc-panel');
+                }
+                if (panel && typeof panel.scrollIntoView === 'function') {
+                    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+            }
+        }
+
+        toggle.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            showToc();
+        });
+
+        row.addEventListener('click', function (ev) {
+            var target = ev.target instanceof Element ? ev.target.closest('[data-action="hide-toc"]') : null;
+            if (target) {
+                ev.preventDefault();
+                hideToc();
+            }
+        });
+
+        updateButton();
+    }
+
+    function scheduleSetup() {
+        if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(attemptSetup);
+        } else {
+            setTimeout(attemptSetup, 16);
+        }
+    }
+
+    var observer = new MutationObserver(scheduleSetup);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', attemptSetup);
+    } else {
+        attemptSetup();
+    }
+})();
+</script>
 """
 
 TREE_CSS = """
@@ -1720,17 +1970,23 @@ def ui_app():
                         status_bar = gr.HTML("", elem_classes=["status-bar"])
             with gr.Column(scale=7, elem_classes=["content-col"]):
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
-                    with gr.TabItem("目录", id="toc"):
-                        toc_panel = gr.HTML(
-                            "<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>",
-                            elem_classes=["toc-card"],
-                        )
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
-                        html_view = gr.HTML(
-                            "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
-                            elem_id="doc-html-view",
-                            elem_classes=["doc-preview"],
+                        with gr.Row(elem_id="preview-row", elem_classes=["preview-row"]):
+                            toc_panel = gr.HTML(
+                                DEFAULT_TOC_PANEL,
+                                elem_id="doc-toc-panel",
+                                elem_classes=["toc-card"],
+                            )
+                            html_view = gr.HTML(
+                                "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
+                                elem_id="doc-html-view",
+                                elem_classes=["doc-preview"],
+                            )
+                        toc_toggle = gr.HTML(
+                            "<button type='button' id='toc-toggle-button' class='toc-toggle-button' aria-expanded='true'>显示目录</button>",
+                            elem_id="toc-toggle",
+                            elem_classes=["toc-toggle"],
                         )
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
@@ -1762,19 +2018,24 @@ def ui_app():
 
         def _render_from_key(key: str | None):
             if not key:
-                return "", "<em>未选择文件</em>", "", "<div class='toc-empty'>请选择 Markdown 文档以生成目录</div>"
+                return "", "<em>未选择文件</em>", "", DEFAULT_TOC_PANEL
             try:
                 _, doc_type, text, html, toc = get_document(key)
             except Exception as exc:
                 msg = _esc(str(exc))
-                return download_link_html(key), f"<div class='doc-error'>{msg}</div>", msg, "<div class='toc-empty'>无法生成目录</div>"
+                return (
+                    download_link_html(key),
+                    f"<div class='doc-error'>{msg}</div>",
+                    msg,
+                    _wrap_toc_panel("<div class='toc-empty'>无法生成目录</div>"),
+                )
 
             if doc_type == "markdown":
                 toc_html = toc or "<div class='toc-empty'>文档中暂无可用标题</div>"
             else:
                 toc_html = "<div class='toc-empty'>当前文档类型未提供目录</div>"
 
-            return download_link_html(key), html, text, toc_html
+            return download_link_html(key), html, text, _wrap_toc_panel(toc_html)
 
         def _search(query: str):
             return fulltext_search(query)
