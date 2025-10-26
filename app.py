@@ -868,6 +868,48 @@ MARKDOWN_EXTENSION_CONFIGS = {
         "tex_block_wrap": [r"\[", r"\]"],
     },
 }
+
+
+_LITERAL_ACRONYM_PATTERN = re.compile(r"\\\(([A-Z0-9]+(?:[\/-][A-Z0-9]+)*)\\\)")
+
+
+def _is_cjk_char(ch: str) -> bool:
+    if not ch:
+        return False
+    return bool(re.search(r"[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]", ch))
+
+
+def _is_ascii_word_char(ch: str) -> bool:
+    return bool(ch and re.match(r"[A-Za-z0-9]", ch))
+
+
+def _restore_literal_acronyms(text: str) -> str:
+    """Collapse escaped acronym parentheses back to literals when context allows."""
+
+    if not text or "\\(" not in text:
+        return text
+
+    def _should_restore(inner: str, left: Optional[str], right: Optional[str]) -> bool:
+        if not inner or len(inner) <= 2:
+            return False
+        if not re.fullmatch(r"[A-Z0-9]+(?:[\/-][A-Z0-9]+)*", inner):
+            return False
+        if _is_cjk_char(left) or _is_cjk_char(right):
+            return True
+        if _is_ascii_word_char(left) or _is_ascii_word_char(right):
+            return False
+        return True
+
+    def _repl(match: re.Match) -> str:
+        inner = match.group(1)
+        start, end = match.span()
+        left = text[start - 1] if start > 0 else None
+        right = text[end] if end < len(text) else None
+        if _should_restore(inner, left, right):
+            return f"({inner})"
+        return match.group(0)
+
+    return _LITERAL_ACRONYM_PATTERN.sub(_repl, text)
 #IMG_EXTS 是一个包含常见图片文件扩展名的元组。它用于快速检查一个文件路径是否以这些扩展名结尾，以确定其是否为图片文件。
 
 
