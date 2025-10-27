@@ -507,9 +507,20 @@ def ensure_es_index(es: Elasticsearch) -> None:
         index=ES_INDEX,
         mappings={
             "properties": {
-                "path": {"type": "keyword"},
-                "title": {"type": "keyword"},
-                "content": {"type": "text"},
+                "path": {
+                    "type": "keyword",
+                    "fields": {"text": {"type": "text"}},
+                },
+                "title": {
+                    "type": "keyword",
+                    "fields": {"text": {"type": "text"}},
+                },
+                "content": {
+                    "type": "text",
+                    "fields": {
+                        "search": {"type": "search_as_you_type"},
+                    },
+                },
                 "etag": {"type": "keyword"},
                 "ext": {"type": "keyword"},
             }
@@ -1324,6 +1335,38 @@ body {
     flex-direction:column;
     gap:10px;
 }
+.search-mode {
+    display:flex !important;
+    gap:8px;
+    justify-content:space-between;
+}
+.search-mode label {
+    flex:1 1 auto;
+    margin:0 !important;
+}
+.search-mode input[type="radio"] {
+    display:none;
+}
+.search-mode span {
+    display:block;
+    padding:8px 12px;
+    border-radius:999px;
+    text-align:center;
+    border:1px solid transparent;
+    background:#f3f6fd;
+    color:var(--brand-muted);
+    font-weight:500;
+    transition:all .2s ease;
+}
+.search-mode input[type="radio"]:checked + span {
+    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
+    color:#fff;
+    border-color:rgba(20,88,214,0.35);
+    box-shadow:0 10px 22px rgba(20,88,214,0.2);
+}
+.search-mode input[type="radio"]:focus-visible + span {
+    outline:2px solid var(--brand-primary);
+}
 .search-button button {
     width:100%;
     border-radius:16px !important;
@@ -1789,6 +1832,28 @@ TREE_CSS = """
 
 # ==================== 全文搜索 ====================
 
+
+def highlight_text(text: Optional[str], q: str) -> str:
+    base = text or ""
+    if not base:
+        return _esc(base)
+    q = (q or "").strip()
+    if not q:
+        return _esc(base)
+    try:
+        pattern = re.compile(re.escape(q), re.IGNORECASE)
+    except re.error:
+        return _esc(base)
+    last = 0
+    parts: List[str] = []
+    for match in pattern.finditer(base):
+        parts.append(_esc(base[last : match.start()]))
+        parts.append(f"<mark>{_esc(match.group(0))}</mark>")
+        last = match.end()
+    parts.append(_esc(base[last:]))
+    return "".join(parts)
+
+
 def make_snippet(text: str, q: str, width: int = 60) -> str:
     t = text
     ql = q.lower()
@@ -1800,16 +1865,21 @@ def make_snippet(text: str, q: str, width: int = 60) -> str:
     b = min(len(t), pos + len(q) + width)
     snippet = t[a:b]
     # 简单高亮（大小写不敏感）
-    snippet_html = _esc(snippet)
-    pat = re.compile(re.escape(q), re.IGNORECASE)
-    snippet_html = pat.sub(lambda m: f"<mark>{_esc(m.group(0))}</mark>", snippet_html)
+    snippet_html = highlight_text(snippet, q)
     return ("…" if a>0 else "") + snippet_html + ("…" if b<len(t) else "")
 
 
-def fulltext_search(query: str) -> str:
+def _escape_wildcard(term: str) -> str:
+    return re.sub(r"([\\*?\[\]])", r"\\\\\1", term)
+
+
+def fulltext_search(query: str, scope: str = "content") -> str:
     query = (query or "").strip()
     if not query:
         return "<em>请输入关键字</em>"
+    scope_key = (scope or "content").strip().lower()
+    if scope_key not in {"content", "title"}:
+        scope_key = "content"
     if not ES_ENABLED:
         return "<em>未配置 Elasticsearch，无法执行全文检索</em>"
     try:
@@ -1817,17 +1887,63 @@ def fulltext_search(query: str) -> str:
     except Exception as exc:  # pragma: no cover - 运行时依赖外部服务
         return f"<em>搜索服务不可用：{_esc(str(exc))}</em>"
     try:
-        search_body = {
-            "size": 200,
-            # 使用 match 查询与 Postman 中保持一致，避免 multi_match 在仅有单字段时出现兼容性问题
-            "query": {"match": {"content": {"query": query}}},
-            "highlight": {
+        highlight: Optional[Dict[str, Dict]] = None
+        if scope_key == "content":
+            highlight = {
                 "pre_tags": ["<mark>"],
                 "post_tags": ["</mark>"],
                 "fields": {"content": {"fragment_size": 120, "number_of_fragments": 3}},
                 "max_analyzed_offset": ES_MAX_ANALYZED_OFFSET,
-            },
+            }
+            should_clauses: List[Dict] = [
+                {"match_phrase": {"content": {"query": query, "boost": 6.0}}},
+                {"match": {"content": {"query": query, "boost": 2.5}}},
+            ]
+            prefix_fields = [
+                "content.search",
+                "content.search._2gram",
+                "content.search._3gram",
+            ]
+            should_clauses.append(
+                {
+                    "multi_match": {
+                        "query": query,
+                        "type": "bool_prefix",
+                        "fields": prefix_fields,
+                        "boost": 2.0,
+                    }
+                }
+            )
+            query_body = {
+                "bool": {
+                    "should": should_clauses,
+                    "minimum_should_match": 1,
+                }
+            }
+        else:
+            sanitized = _escape_wildcard(query)
+            wildcard_value = f"*{sanitized}*" if sanitized else "*"
+            should_clauses = [
+                {"term": {"title": {"value": query, "boost": 6.0}}},
+                {"match_phrase": {"title.text": {"query": query, "boost": 4.0}}},
+                {"match": {"title.text": {"query": query, "boost": 2.5}}},
+                {"match_phrase": {"path.text": {"query": query, "boost": 1.5}}},
+                {"match": {"path.text": {"query": query, "boost": 1.0}}},
+                {"wildcard": {"title": {"value": wildcard_value, "boost": 0.8}}},
+                {"wildcard": {"path": {"value": wildcard_value, "boost": 0.4}}},
+            ]
+            query_body = {
+                "bool": {
+                    "should": should_clauses,
+                    "minimum_should_match": 1,
+                }
+            }
+        search_body = {
+            "size": 200,
+            "query": query_body,
         }
+        if highlight:
+            search_body["highlight"] = highlight
         resp = _es_search_request(
             es,
             search_body,
@@ -1844,16 +1960,22 @@ def fulltext_search(query: str) -> str:
     for hit in hits:
         key = hit.get("_id") or ""
         title = key.split("/")[-1] if key else "未知文件"
-        highlights = hit.get("highlight", {}).get("content", [])
-        if highlights:
-            snippet = "<br>".join(highlights)
+        src = hit.get("_source", {})
+        if scope_key == "content":
+            highlights = hit.get("highlight", {}).get("content", [])
+            if highlights:
+                snippet = "<br>".join(highlights)
+            else:
+                snippet = make_snippet(src.get("content", ""), query)
+            link_label = _esc(title)
         else:
-            src = hit.get("_source", {})
-            snippet = make_snippet(src.get("content", ""), query)
+            snippet_source = src.get("path") or key
+            snippet = make_snippet(snippet_source, query, width=30)
+            link_label = highlight_text(title, query)
         score = hit.get("_score", 0.0)
         icon = _file_icon(key or title)
         rows.append(
-            f"<div>{icon} <a href='?{urlencode({'key': key})}'>{_esc(title)}</a> "
+            f"<div>{icon} <a href='?{urlencode({'key': key})}'>{link_label}</a> "
             f"<span class='badge'>(相关度 {score:.2f})</span><br>"
             f"<div class='search-snippet'>{snippet}</div></div>"
         )
@@ -1945,8 +2067,14 @@ def ui_app():
                     with gr.Column(elem_classes=["search-stack"]):
                         q = gr.Textbox(
                             show_label=False,
-                            placeholder="支持全文搜索",
+                            placeholder="输入关键字，支持全文或文件名搜索",
                             elem_classes=["search-input"],
+                        )
+                        search_mode = gr.Radio(
+                            choices=["全文内容", "文件名"],
+                            value="全文内容",
+                            show_label=False,
+                            elem_classes=["search-mode"],
                         )
                         btn_search = gr.Button("搜索", elem_classes=["search-button"])
                     tree_html = gr.HTML("<em>加载中…</em>", elem_classes=["sidebar-tree", "sidebar-card"])
@@ -2025,8 +2153,9 @@ def ui_app():
 
             return download_link_html(key), html, text, _wrap_toc_panel(toc_html)
 
-        def _search(query: str):
-            return fulltext_search(query)
+        def _search(query: str, mode: str):
+            scope = "title" if mode == "文件名" else "content"
+            return fulltext_search(query, scope)
 
         def _clear_cache():
             n = len(DOC_CACHE.od)
@@ -2049,8 +2178,12 @@ def ui_app():
         btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_clear.click(_clear_cache, outputs=status_bar)
         btn_reindex.click(_force_reindex, outputs=status_bar)
-        q.submit(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
-        btn_search.click(_search, inputs=q, outputs=search_out).then(_activate_search_tab, outputs=content_tabs)
+        q.submit(_search, inputs=[q, search_mode], outputs=search_out).then(
+            _activate_search_tab, outputs=content_tabs
+        )
+        btn_search.click(_search, inputs=[q, search_mode], outputs=search_out).then(
+            _activate_search_tab, outputs=content_tabs
+        )
 
         # 解析 URL 参数中的 key 并渲染
         def on_load_with_req(request: gr.Request):
