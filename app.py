@@ -1501,17 +1501,6 @@ body {
     font-size:.95rem;
     line-height:1.6;
 }
-.preview-row {
-    align-items:stretch;
-    gap:18px;
-}
-.preview-row .toc-column {
-    flex:0 0 260px !important;
-    max-width:260px;
-}
-.preview-row .preview-column {
-    flex:1 1 auto !important;
-}
 .download-panel {
     margin-bottom:12px;
 }
@@ -1643,11 +1632,6 @@ body {
     }
     .sidebar-sticky { position:static; }
     .sidebar-tree { max-height:unset; }
-    .preview-row { flex-direction:column; }
-    .preview-row .toc-column {
-        max-width:none !important;
-        flex:1 1 auto !important;
-    }
     #doc-toc-panel .toc-shell-body {
         max-height:none;
     }
@@ -2043,18 +2027,11 @@ def ui_app():
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
-                        with gr.Row(elem_id="preview-row", elem_classes=["preview-row"]):
-                            with gr.Column(scale=2, elem_id="toc-column", elem_classes=["toc-column"]):
-                                toc_panel = gr.HTML(
-                                    DEFAULT_TOC_PANEL,
-                                    elem_id="doc-toc-panel",
-                                )
-                            with gr.Column(scale=8, elem_classes=["preview-column"]):
-                                html_view = gr.HTML(
-                                    "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
-                                    elem_id="doc-html-view",
-                                    elem_classes=["doc-preview"],
-                                )
+                        html_view = gr.HTML(
+                            "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
+                            elem_id="doc-html-view",
+                            elem_classes=["doc-preview"],
+                        )
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
                     with gr.TabItem("全文搜索", id="search"):
