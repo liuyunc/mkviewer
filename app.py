@@ -1405,16 +1405,24 @@ body {
     border:1px solid var(--brand-border);
     box-shadow:var(--brand-shadow);
 }
-.toc-panel {
+#doc-toc-panel {
+    background:var(--brand-card);
+    border-radius:var(--brand-radius);
+    border:1px solid var(--brand-border);
+    box-shadow:var(--brand-shadow);
     padding:0;
     overflow:hidden;
-}
-.toc-shell {
     display:flex;
     flex-direction:column;
     min-height:0;
 }
-.toc-shell-header {
+#doc-toc-panel .toc-shell {
+    display:flex;
+    flex-direction:column;
+    min-height:0;
+    flex:1 1 auto;
+}
+#doc-toc-panel .toc-shell-header {
     display:flex;
     align-items:center;
     justify-content:space-between;
@@ -1422,13 +1430,13 @@ body {
     border-bottom:1px solid rgba(148,163,184,0.25);
     gap:12px;
 }
-.toc-shell-title {
+#doc-toc-panel .toc-shell-title {
     font-weight:600;
     color:var(--brand-muted);
     letter-spacing:.02em;
     font-size:.95rem;
 }
-.toc-shell-toggle {
+#doc-toc-panel .toc-shell-toggle {
     border:none;
     background:transparent;
     color:var(--brand-primary);
@@ -1438,45 +1446,45 @@ body {
     cursor:pointer;
     transition:background .2s ease,color .2s ease;
 }
-.toc-shell-toggle:hover {
+#doc-toc-panel .toc-shell-toggle:hover {
     background:rgba(20,88,214,0.12);
 }
-.toc-shell-toggle.is-disabled,
-.toc-shell-toggle.is-disabled:hover {
+#doc-toc-panel .toc-shell-toggle[disabled],
+#doc-toc-panel .toc-shell-toggle[disabled]:hover {
     background:transparent;
     color:var(--brand-muted);
     cursor:default;
     opacity:0.6;
     pointer-events:none;
 }
-.toc-shell-body {
+#doc-toc-panel .toc-shell-body {
     padding:12px 18px 16px;
     max-height:min(52vh, 440px);
     overflow:auto;
 }
-.toc-shell-body::-webkit-scrollbar { width:8px; }
-.toc-shell-body::-webkit-scrollbar-thumb {
+#doc-toc-panel .toc-shell-body::-webkit-scrollbar { width:8px; }
+#doc-toc-panel .toc-shell-body::-webkit-scrollbar-thumb {
     background:rgba(20,88,214,0.25);
     border-radius:10px;
 }
-.toc-panel.is-collapsed .toc-shell-body {
+#doc-toc-panel.is-collapsed .toc-shell-body {
     display:none;
 }
-.toc-panel.is-collapsed .toc-shell-toggle {
+#doc-toc-panel.is-collapsed .toc-shell-toggle {
     color:var(--brand-muted);
 }
-.toc-tree {
+#doc-toc-panel .toc-tree {
     font-size:.9rem;
     line-height:1.58;
 }
-.toc-tree > .toc-list { padding-left:0; }
-.toc-tree ul {
+#doc-toc-panel .toc-tree > .toc-list { padding-left:0; }
+#doc-toc-panel .toc-tree ul {
     list-style:none;
     padding-left:1rem;
     margin:6px 0;
 }
-.toc-tree li { margin:3px 0; }
-.toc-tree a {
+#doc-toc-panel .toc-tree li { margin:3px 0; }
+#doc-toc-panel .toc-tree a {
     color:var(--brand-primary);
     text-decoration:none;
     font-weight:500;
@@ -1484,47 +1492,14 @@ body {
     padding:2px 6px;
     border-radius:12px;
 }
-.toc-tree a:hover {
+#doc-toc-panel .toc-tree a:hover {
     text-decoration:none;
     background:rgba(20,88,214,0.12);
 }
-.toc-empty {
+#doc-toc-panel .toc-empty {
     color:var(--brand-muted);
     font-size:.95rem;
     line-height:1.6;
-}
-#preview-row.toc-hidden .doc-preview {
-    flex-basis:100%;
-}
-.toc-toggle {
-    display:flex;
-    justify-content:flex-start;
-    margin-top:0;
-    position:sticky;
-    top:130px;
-    z-index:5;
-    padding-left:24px;
-}
-.toc-toggle-button {
-    display:none;
-    align-items:center;
-    gap:6px;
-    border:none;
-    border-radius:999px;
-    padding:10px 18px;
-    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
-    color:#ffffff;
-    font-weight:600;
-    cursor:pointer;
-    box-shadow:var(--brand-shadow);
-    transition:transform .2s ease, box-shadow .2s ease;
-}
-.toc-toggle-button.visible {
-    display:inline-flex;
-}
-.toc-toggle-button.visible:hover {
-    transform:translateY(-1px);
-    box-shadow:0 12px 26px rgba(20,88,214,0.2);
 }
 .download-panel {
     margin-bottom:12px;
@@ -1657,7 +1632,7 @@ body {
     }
     .sidebar-sticky { position:static; }
     .sidebar-tree { max-height:unset; }
-    .toc-panel {
+    #doc-toc-panel .toc-shell-body {
         max-height:none;
     }
 }
@@ -1674,30 +1649,12 @@ body {
 </style>
 <script>
 (function () {
-    var state = window.__mkvTocState || (window.__mkvTocState = {
+    var state = {
         collapsed: false,
-        panel: null,
-        toggle: null,
-        boundToggle: null,
-    });
+    };
 
-    function ensureElements() {
-        if (!state.panel || !(state.panel instanceof Element) || !state.panel.isConnected) {
-            state.panel = document.getElementById('doc-toc-panel');
-        }
-        if (!state.panel) {
-            state.toggle = null;
-            return false;
-        }
-        var nextToggle = state.panel.querySelector('[data-action="toggle-toc"]');
-        if (nextToggle !== state.toggle) {
-            if (state.toggle && state.toggle === state.boundToggle) {
-                state.toggle.removeEventListener('click', handleToggle);
-                state.boundToggle = null;
-            }
-            state.toggle = nextToggle;
-        }
-        return Boolean(state.panel && state.toggle);
+    function getPanel() {
+        return document.getElementById('doc-toc-panel');
     }
 
     function hasContent(panel) {
@@ -1711,91 +1668,72 @@ body {
         return !body.querySelector('.toc-empty');
     }
 
-    function applyState() {
-        if (!ensureElements()) {
+    function refreshPanel() {
+        var panel = getPanel();
+        if (!panel) {
             return;
         }
-        var panel = state.panel;
-        var toggle = state.toggle;
-        var collapsed = Boolean(state.collapsed);
-        var contentAvailable = hasContent(panel);
-        if (!contentAvailable && collapsed) {
-            collapsed = false;
+        var toggle = panel.querySelector('.toc-shell-toggle');
+        var contentReady = hasContent(panel);
+        if (!contentReady) {
             state.collapsed = false;
-        }
-        panel.classList.toggle('is-collapsed', collapsed);
-        panel.setAttribute('data-collapsed', collapsed ? '1' : '0');
-        if (toggle) {
-            if (contentAvailable) {
-                toggle.removeAttribute('disabled');
-                toggle.classList.remove('is-disabled');
-                toggle.textContent = collapsed ? '展开目录' : '收起目录';
-                toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-            } else {
+            panel.classList.remove('is-collapsed');
+            if (toggle) {
                 toggle.setAttribute('disabled', 'true');
-                toggle.classList.add('is-disabled');
-                toggle.textContent = '暂无目录';
                 toggle.setAttribute('aria-expanded', 'false');
+                toggle.textContent = '暂无目录';
             }
+            return;
         }
+
+        if (toggle) {
+            toggle.removeAttribute('disabled');
+            toggle.setAttribute('aria-expanded', state.collapsed ? 'false' : 'true');
+            toggle.textContent = state.collapsed ? '展开目录' : '收起目录';
+        }
+
+        panel.classList.toggle('is-collapsed', state.collapsed);
     }
 
-    function handleToggle(ev) {
-        if (ev) {
-            ev.preventDefault();
-        }
-        if (!ensureElements()) {
+    function handleToggle(event) {
+        var panel = getPanel();
+        if (!panel) {
             return;
         }
-        if (!hasContent(state.panel)) {
+        var target = event.target;
+        if (!target || !target.closest) {
+            return;
+        }
+        var button = target.closest('.toc-shell-toggle');
+        if (!button || !panel.contains(button)) {
+            return;
+        }
+        event.preventDefault();
+        if (!hasContent(panel) || button.hasAttribute('disabled')) {
             return;
         }
         state.collapsed = !state.collapsed;
-        applyState();
-        if (!state.collapsed && state.panel && typeof state.panel.scrollIntoView === 'function') {
+        refreshPanel();
+        if (!state.collapsed && typeof panel.scrollIntoView === 'function') {
             try {
-                state.panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             } catch (err) {
-                state.panel.scrollIntoView();
+                panel.scrollIntoView();
             }
         }
     }
 
-    function attemptSetup() {
-        if (!ensureElements()) {
-            return;
-        }
-        if (state.toggle && state.toggle !== state.boundToggle) {
-            if (state.boundToggle) {
-                state.boundToggle.removeEventListener('click', handleToggle);
-            }
-            state.toggle.addEventListener('click', handleToggle);
-            state.boundToggle = state.toggle;
-        }
-        var attr = state.panel ? state.panel.getAttribute('data-collapsed') : null;
-        if (attr === '1') {
-            state.collapsed = true;
-        } else if (attr === '0') {
-            state.collapsed = false;
-        }
-        applyState();
-    }
+    document.addEventListener('click', handleToggle, true);
 
-    function scheduleSetup() {
-        if (typeof requestAnimationFrame === 'function') {
-            requestAnimationFrame(attemptSetup);
-        } else {
-            setTimeout(attemptSetup, 16);
-        }
-    }
-
-    var observer = new MutationObserver(scheduleSetup);
+    var observer = new MutationObserver(function () {
+        refreshPanel();
+    });
     observer.observe(document.documentElement, { childList: true, subtree: true });
 
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', attemptSetup);
+        document.addEventListener('DOMContentLoaded', refreshPanel);
     } else {
-        attemptSetup();
+        refreshPanel();
     }
 })();
 </script>
@@ -2088,21 +2026,10 @@ def ui_app():
                 with gr.Tabs(selected="preview", elem_id="content-tabs", elem_classes=["content-card"]) as content_tabs:
                     with gr.TabItem("预览", id="preview"):
                         dl_html = gr.HTML("", elem_classes=["download-panel"])
-                        with gr.Row(elem_id="preview-row", elem_classes=["preview-row"]):
-                            toc_panel = gr.HTML(
-                                DEFAULT_TOC_PANEL,
-                                elem_id="doc-toc-panel",
-                                elem_classes=["toc-card"],
-                            )
-                            html_view = gr.HTML(
-                                "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
-                                elem_id="doc-html-view",
-                                elem_classes=["doc-preview"],
-                            )
-                        toc_toggle = gr.HTML(
-                            "<button type='button' id='toc-toggle-button' class='toc-toggle-button' aria-expanded='true'>显示目录</button>",
-                            elem_id="toc-toggle",
-                            elem_classes=["toc-toggle"],
+                        html_view = gr.HTML(
+                            "<div class='doc-preview-inner doc-preview-empty'><em>请选择左侧文件…</em></div>",
+                            elem_id="doc-html-view",
+                            elem_classes=["doc-preview"],
                         )
                     with gr.TabItem("文本内容", id="source"):
                         md_view = gr.Textbox(lines=26, interactive=False, label="提取的纯文本", elem_classes=["plaintext-view"])
