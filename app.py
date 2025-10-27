@@ -1645,6 +1645,7 @@ body {
         max-width:none;
         flex:1 1 auto;
     }
+    .preview-row { gap:12px; }
 }
 </style>
 <script>
