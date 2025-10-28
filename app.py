@@ -1337,35 +1337,45 @@ body {
 }
 .search-mode {
     display:flex !important;
+    flex-direction:column;
+    gap:4px;
+    align-items:flex-start;
+}
+.search-mode .gr-checkbox-group {
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+}
+.search-mode .gr-checkbox {
+    display:flex;
+    align-items:center;
     gap:8px;
-    justify-content:space-between;
+    padding:4px 6px;
+    border-radius:10px;
+    transition:background .2s ease, color .2s ease;
 }
-.search-mode label {
-    flex:1 1 auto;
-    margin:0 !important;
-}
-.search-mode input[type="radio"] {
-    display:none;
-}
-.search-mode span {
-    display:block;
-    padding:8px 12px;
-    border-radius:999px;
-    text-align:center;
-    border:1px solid transparent;
-    background:#f3f6fd;
+.search-mode .gr-checkbox label {
+    font-size:.9rem;
     color:var(--brand-muted);
-    font-weight:500;
-    transition:all .2s ease;
+    cursor:pointer;
 }
-.search-mode input[type="radio"]:checked + span {
-    background:linear-gradient(135deg,var(--brand-primary),var(--brand-primary-soft));
-    color:#fff;
-    border-color:rgba(20,88,214,0.35);
-    box-shadow:0 10px 22px rgba(20,88,214,0.2);
+.search-mode .gr-checkbox input[type="checkbox"] {
+    width:16px;
+    height:16px;
+    accent-color:var(--brand-primary);
 }
-.search-mode input[type="radio"]:focus-visible + span {
-    outline:2px solid var(--brand-primary);
+.search-mode .gr-checkbox:hover {
+    background:rgba(20,88,214,0.12);
+}
+.search-mode .gr-checkbox input[type="checkbox"]:checked + label,
+.search-mode .gr-checkbox input[type="checkbox"]:checked ~ label {
+    color:var(--brand-primary);
+    font-weight:600;
+}
+.search-mode .gr-checkbox input[type="checkbox"]:focus-visible {
+    outline:2px solid rgba(20,88,214,0.4);
+    outline-offset:2px;
+    border-radius:4px;
 }
 .search-button button {
     width:100%;
@@ -1573,6 +1583,14 @@ body {
     color:var(--brand-text);
     border-radius:4px;
     padding:0 3px;
+}
+.search-panel .search-result {
+    padding:12px 0;
+    border-bottom:1px solid rgba(15,23,42,0.08);
+}
+.search-panel .search-result:last-child {
+    border-bottom:none;
+    padding-bottom:0;
 }
 .search-snippet {
     margin-left:1.2rem;
@@ -1793,6 +1811,24 @@ def highlight_text(text: Optional[str], q: str) -> str:
     return "".join(parts)
 
 
+def _sanitize_highlight_snippet(snippet: str) -> str:
+    if not snippet:
+        return ""
+    mark_open = "\ufff0"
+    mark_close = "\ufff1"
+    cleaned = snippet
+    cleaned = cleaned.replace("<mark>", mark_open).replace("</mark>", mark_close)
+    cleaned = re.sub(r"<br\s*/?>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+    cleaned = _esc(cleaned)
+    cleaned = cleaned.replace("\n", "<br>")
+    return (
+        cleaned.replace(mark_open, "<mark>")
+        .replace(mark_close, "</mark>")
+        .strip()
+    )
+
+
 def make_snippet(text: str, q: str, width: int = 60) -> str:
     t = text
     ql = q.lower()
@@ -1901,7 +1937,11 @@ def fulltext_search(query: str, scope: str = "content") -> str:
         title = key.split("/")[-1] if key else "未知文件"
         src = hit.get("_source", {})
         if scope_key == "content":
-            highlights = hit.get("highlight", {}).get("content", [])
+            highlights = [
+                _sanitize_highlight_snippet(item)
+                for item in hit.get("highlight", {}).get("content", [])
+            ]
+            highlights = [h for h in highlights if h]
             if highlights:
                 snippet = "<br>".join(highlights)
             else:
@@ -1913,10 +1953,12 @@ def fulltext_search(query: str, scope: str = "content") -> str:
             link_label = highlight_text(title, query)
         score = hit.get("_score", 0.0)
         icon = _file_icon(key or title)
+        snippet_block = f"<div class='search-snippet'>{snippet}</div>" if snippet else ""
         rows.append(
-            f"<div>{icon} <a href='?{urlencode({'key': key})}'>{link_label}</a> "
-            f"<span class='badge'>(相关度 {score:.2f})</span><br>"
-            f"<div class='search-snippet'>{snippet}</div></div>"
+            "<div class='search-result'>"
+            f"{icon} <a href='?{urlencode({'key': key})}'>{link_label}</a> "
+            f"<span class='badge'>(相关度 {score:.2f})</span>"
+            f"{snippet_block}</div>"
         )
     return "".join(rows)
 
@@ -2009,9 +2051,9 @@ def ui_app():
                             placeholder="输入关键字，支持全文或文件名搜索",
                             elem_classes=["search-input"],
                         )
-                        search_mode = gr.Radio(
+                        search_mode = gr.CheckboxGroup(
                             choices=["全文内容", "文件名"],
-                            value="全文内容",
+                            value=["全文内容"],
                             show_label=False,
                             elem_classes=["search-mode"],
                         )
@@ -2081,8 +2123,22 @@ def ui_app():
 
             return download_link_html(key), html, text, _wrap_toc_panel(toc_html)
 
-        def _search(query: str, mode: str):
-            scope = "title" if mode == "文件名" else "content"
+        def _normalize_search_mode_value(mode: object) -> str:
+            if isinstance(mode, str):
+                candidate = mode
+            elif isinstance(mode, (list, tuple)):
+                candidate = mode[-1] if mode else ""
+            else:
+                candidate = ""
+            return candidate if candidate in {"全文内容", "文件名"} else "全文内容"
+
+        def _sync_search_mode(mode: object):
+            normalized = _normalize_search_mode_value(mode)
+            return gr.update(value=[normalized])
+
+        def _search(query: str, mode: object):
+            normalized = _normalize_search_mode_value(mode)
+            scope = "title" if normalized == "文件名" else "content"
             return fulltext_search(query, scope)
 
         def _clear_cache():
@@ -2106,6 +2162,7 @@ def ui_app():
         btn_collapse.click(lambda: False, None, expand_state).then(_render_cached_tree, inputs=expand_state, outputs=[tree_html, status_bar, hero_html])
         btn_clear.click(_clear_cache, outputs=status_bar)
         btn_reindex.click(_force_reindex, outputs=status_bar)
+        search_mode.change(_sync_search_mode, inputs=search_mode, outputs=search_mode)
         q.submit(_search, inputs=[q, search_mode], outputs=search_out).then(
             _activate_search_tab, outputs=content_tabs
         )
