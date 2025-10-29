@@ -1595,6 +1595,13 @@ body {
 .download-actions {
     display:flex;
     justify-content:flex-start;
+    align-items:center;
+    gap:10px;
+}
+.download-error {
+    color:#d93025;
+    font-size:.95rem;
+    padding:10px 0;
 }
 .download-button {
     display:inline-flex;
@@ -2059,8 +2066,20 @@ def download_link_html(doc: Dict[str, object]) -> str:
     try:
         url = c.presigned_get_object(bucket, target, expires=timedelta(hours=6))
     except Exception:
-        # 回退到原始桶
-        url = c.presigned_get_object(DOC_BUCKET, key, expires=timedelta(hours=6))
+        url = None
+        if key and (bucket != DOC_BUCKET or target != key):
+            try:
+                url = c.presigned_get_object(
+                    DOC_BUCKET, key, expires=timedelta(hours=6)
+                )
+            except Exception:
+                url = None
+        if not url:
+            return (
+                "<div class='download-actions'><span class='download-error'>"
+                "下载链接暂不可用，请稍后重试。"
+                "</span></div>"
+            )
     esc = _esc(url)
     return (
         "<div class='download-actions'>"
