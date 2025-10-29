@@ -44,6 +44,7 @@ MINIO_SECURE = os.getenv("MINIO_SECURE", "false").strip().lower() == "true"
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
 DOC_BUCKET = os.getenv("DOC_BUCKET", "bucket")
+PDF_BUCKET = os.getenv("PDF_BUCKET", "files")
 DOC_PREFIX = os.getenv("DOC_PREFIX", "")
 IMAGE_PUBLIC_BASE = os.getenv("IMAGE_PUBLIC_BASE", "http://10.20.41.24:9005")
 SITE_TITLE = os.getenv("SITE_TITLE", "通号院文档知识库")
@@ -803,14 +804,16 @@ class LRU:
 
 DOC_CACHE = LRU(512)  # key -> (etag, doc_type, text, html, toc)
 
-TREE_DOCS: List[Dict[str, str]] = []
+TREE_DOCS: List[Dict[str, object]] = []
+DOC_LOOKUP: Dict[str, Dict[str, object]] = {}
 
 # ==================== 列表/读取 ====================
 
-def list_documents() -> List[Dict[str, str]]:
+def list_documents() -> List[Dict[str, object]]:
     c, _ = connect()
     objs = c.list_objects(DOC_BUCKET, prefix=DOC_PREFIX or None, recursive=True)
-    docs: List[Dict[str, str]] = []
+    docs: List[Dict[str, object]] = []
+    doc_base_map: Dict[str, List[Dict[str, object]]] = {}
     for o in objs:
         name = o.object_name
         ext = os.path.splitext(name)[1].lower()
@@ -818,7 +821,54 @@ def list_documents() -> List[Dict[str, str]]:
         if not doc_type:
             continue
         etag = getattr(o, "etag", None) or getattr(o, "_etag", None) or ""
-        docs.append({"key": name, "etag": etag, "ext": ext, "doc_type": doc_type})
+        info: Dict[str, object] = {
+            "key": name,
+            "etag": etag,
+            "ext": ext,
+            "doc_type": doc_type,
+            "original_key": None,
+            "has_original": False,
+            "searchable": True,
+            "original_only": False,
+        }
+        base = os.path.splitext(name)[0]
+        docs.append(info)
+        doc_base_map.setdefault(base, []).append(info)
+
+    pdf_entries: Dict[str, Dict[str, str]] = {}
+    if PDF_BUCKET:
+        try:
+            pdf_objs = c.list_objects(PDF_BUCKET, prefix=DOC_PREFIX or None, recursive=True)
+            for o in pdf_objs:
+                pdf_name = o.object_name
+                if not pdf_name.lower().endswith(".pdf"):
+                    continue
+                pdf_base = os.path.splitext(pdf_name)[0]
+                pdf_etag = getattr(o, "etag", None) or getattr(o, "_etag", None) or ""
+                pdf_entries[pdf_base] = {"key": pdf_name, "etag": pdf_etag}
+        except Exception:
+            pdf_entries = {}
+
+    for base, pdf_meta in pdf_entries.items():
+        matches = doc_base_map.get(base)
+        if matches:
+            for doc in matches:
+                doc["original_key"] = pdf_meta["key"]
+                doc["has_original"] = True
+        else:
+            docs.append(
+                {
+                    "key": pdf_meta["key"],
+                    "etag": pdf_meta.get("etag", ""),
+                    "ext": ".pdf",
+                    "doc_type": "pdf-original",
+                    "original_key": pdf_meta["key"],
+                    "has_original": True,
+                    "searchable": False,
+                    "original_only": True,
+                }
+            )
+
     docs.sort(key=lambda x: x["key"].lower())
     return docs
 
@@ -951,14 +1001,21 @@ def _decode_possible_text(data: bytes) -> Optional[str]:
 
 def _file_icon(name: str) -> str:
     ext = os.path.splitext(name)[1].lower()
+    if ext == ".pdf":
+        return "📕"
     if ext in (".doc", ".docx"):
         return "📄"
     return "📝"
 
 
-def render_tree_html(tree: Dict, expand_all: bool = False) -> str:
+def render_tree_html(
+    tree: Dict,
+    expand_all: bool = False,
+    metadata: Optional[Dict[str, Dict[str, object]]] = None,
+) -> str:
     html: List[str] = []
     open_attr = " open" if expand_all else ""
+
     def rec(node: Dict):
         dirs = sorted([k for k in node.keys() if k != "__files__"], key=str.lower)
         for d in dirs:
@@ -968,12 +1025,23 @@ def render_tree_html(tree: Dict, expand_all: bool = False) -> str:
         for key in sorted(node.get("__files__", []), key=str.lower):
             name = key.split("/")[-1]
             link = "?" + urlencode({"key": key})
-            html.append(f"<div class='file'>{_file_icon(name)} <a href='{link}'>{_esc(name)}</a></div>")
+            info = metadata.get(key) if metadata else None
+            classes = ["file"]
+            label = _esc(name)
+            if info and info.get("original_only"):
+                classes.append("file-original-only")
+                label = f"{_esc(name)}<span class='file-status'>（未数字化）</span>"
+            html.append(
+                f"<div class='{' '.join(classes)}'>"
+                f"{_file_icon(name)} <a href='{link}'>{label}</a>"
+                "</div>"
+            )
+
     rec(tree)
     return "".join(html) if html else "<em>没有找到可预览的文档</em>"
 
 
-def sync_elasticsearch(docs: List[Dict[str, str]], force: bool = False) -> str:
+def sync_elasticsearch(docs: List[Dict[str, object]], force: bool = False) -> str:
     if not ES_ENABLED:
         return "<em>未启用 Elasticsearch，跳过索引同步</em>"
     if not docs:
@@ -1011,6 +1079,8 @@ def sync_elasticsearch(docs: List[Dict[str, str]], force: bool = False) -> str:
     errors: List[str] = []
     for doc in docs:
         key = doc["key"]
+        if not doc.get("searchable", True):
+            continue
         etag_hint = doc.get("etag")
         if not force and existing_map.get(key) == etag_hint:
             continue
@@ -1312,6 +1382,14 @@ body {
     color:var(--brand-primary);
     text-decoration:none;
     font-weight:500;
+}
+.sidebar-tree .file.file-original-only a {
+    color:#d14343;
+    font-weight:600;
+}
+.sidebar-tree .file.file-original-only .file-status {
+    color:#d14343;
+    font-weight:600;
 }
 .sidebar-tree .file a:hover { text-decoration:underline; }
 .search-input textarea,
@@ -1964,13 +2042,29 @@ def fulltext_search(query: str, scope: str = "content") -> str:
 
 # ==================== 预签名下载链接 ====================
 
-def download_link_html(key: str) -> str:
-    c, ep = connect()
-    url = c.presigned_get_object(DOC_BUCKET, key, expires=timedelta(hours=6))
+def download_link_html(doc: Dict[str, object]) -> str:
+    key = str(doc.get("key", ""))
+    original_key = str(doc.get("original_key") or "")
+    bucket = DOC_BUCKET
+    target = key
+    if doc.get("original_only"):
+        bucket = PDF_BUCKET or DOC_BUCKET
+        target = original_key or key
+    elif original_key:
+        bucket = PDF_BUCKET or DOC_BUCKET
+        target = original_key
+    if not target:
+        return ""
+    c, _ = connect()
+    try:
+        url = c.presigned_get_object(bucket, target, expires=timedelta(hours=6))
+    except Exception:
+        # 回退到原始桶
+        url = c.presigned_get_object(DOC_BUCKET, key, expires=timedelta(hours=6))
     esc = _esc(url)
     return (
         "<div class='download-actions'>"
-        f"<a class='download-button' href='{esc}' target='_blank' rel='noopener'>下载当前文件（有效 6 小时）</a>"
+        f"<a class='download-button' href='{esc}' target='_blank' rel='noopener'>下载原文件（有效 6 小时）</a>"
         "</div>"
     )
 
@@ -2086,31 +2180,48 @@ def ui_app():
         expand_state = gr.State(False)
 
         def _refresh_tree(expand_all: bool):
-            global TREE_DOCS
+            global TREE_DOCS, DOC_LOOKUP
             docs = list_documents()
             TREE_DOCS = docs
+            DOC_LOOKUP = {str(d["key"]): d for d in docs}
             base = DOC_PREFIX.rstrip("/") + "/" if DOC_PREFIX else ""
             tree = build_tree([d["key"] for d in docs], base_prefix=base)
             status = sync_elasticsearch(docs)
-            return render_tree_html(tree, expand_all), status, _hero_html(len(docs))
+            return render_tree_html(tree, expand_all, DOC_LOOKUP), status, _hero_html(len(docs))
 
         def _render_cached_tree(expand_all: bool):
-            global TREE_DOCS
+            global TREE_DOCS, DOC_LOOKUP
             if not TREE_DOCS:
                 return _refresh_tree(expand_all)
             base = DOC_PREFIX.rstrip("/") + "/" if DOC_PREFIX else ""
             tree = build_tree([d["key"] for d in TREE_DOCS], base_prefix=base)
-            return render_tree_html(tree, expand_all), gr.update(), gr.update()
+            DOC_LOOKUP = {str(d["key"]): d for d in TREE_DOCS}
+            return render_tree_html(tree, expand_all, DOC_LOOKUP), gr.update(), gr.update()
 
         def _render_from_key(key: str | None):
             if not key:
                 return "", "<em>未选择文件</em>", "", DEFAULT_TOC_PANEL
+            doc = DOC_LOOKUP.get(key)
+            if not doc:
+                msg = _esc(f"未找到文档：{key}")
+                return "", f"<div class='doc-error'>{msg}</div>", "", _wrap_toc_panel("<div class='toc-empty'>无法生成目录</div>")
+            if doc.get("original_only"):
+                download_html = download_link_html(doc)
+                empty_html = (
+                    "<div class='doc-preview-inner doc-preview-empty'><em>该文件尚未数字化，请下载原文件查看。</em></div>"
+                )
+                return (
+                    download_html,
+                    empty_html,
+                    "",
+                    _wrap_toc_panel("<div class='toc-empty'>当前文档未提供目录</div>"),
+                )
             try:
                 _, doc_type, text, html, toc = get_document(key)
             except Exception as exc:
                 msg = _esc(str(exc))
                 return (
-                    download_link_html(key),
+                    download_link_html(doc),
                     f"<div class='doc-error'>{msg}</div>",
                     msg,
                     _wrap_toc_panel("<div class='toc-empty'>无法生成目录</div>"),
@@ -2121,7 +2232,7 @@ def ui_app():
             else:
                 toc_html = "<div class='toc-empty'>当前文档类型未提供目录</div>"
 
-            return download_link_html(key), html, text, _wrap_toc_panel(toc_html)
+            return download_link_html(doc), html, text, _wrap_toc_panel(toc_html)
 
         def _normalize_search_mode_value(mode: object) -> str:
             if isinstance(mode, str):
